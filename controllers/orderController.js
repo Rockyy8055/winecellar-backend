@@ -84,7 +84,10 @@ async function emailOwnerOrderPlaced(order) {
     const to = 'winecellarcustomerservice@gmail.com';
     const subject = `New Order: ${order.trackingCode} (£${Number(order.total).toFixed(2)})`;
     const itemsText = (order.items || [])
-      .map(it => `- ${it.name} x${it.qty} @ £${Number(it.price).toFixed(2)}`)
+      .map(it => {
+        const itemName = it.name || it.name0 || it.ProductName || it.title || it.productName || it.SKU || it.sku || 'Item';
+        return `- ${itemName} x${it.qty} @ £${Number(it.price).toFixed(2)}`;
+      })
       .join('\n');
     const address = order.shippingAddress || {};
     const customer = order.customer || {};

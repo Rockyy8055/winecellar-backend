@@ -58,12 +58,17 @@ router.post('/api/orders/create', async (req, res) => {
     })();
     try {
       const brand = '#350008';
-      const itemsRows = (items || []).map(it => `
+      const itemsRows = (items || []).map(it => {
+        const itemName = it.name || it.name0 || it.ProductName || it.title || it.productName || it.SKU || it.sku || 'Item';
+        const qty = Number(it.qty || 0);
+        const price = Number(it.price || 0);
+        return `
         <tr>
-          <td style="padding:8px;border:1px solid #eee">${it.name}</td>
-          <td style="padding:8px;border:1px solid #eee;text-align:center">${Number(it.qty||0)}</td>
-          <td style="padding:8px;border:1px solid #eee;text-align:right">£${Number(it.price||0).toFixed(2)}</td>
-        </tr>`).join('');
+          <td style="padding:8px;border:1px solid #eee"><strong>${itemName}</strong></td>
+          <td style="padding:8px;border:1px solid #eee;text-align:center"><strong>x${qty}</strong></td>
+          <td style="padding:8px;border:1px solid #eee;text-align:right">£${price.toFixed(2)}</td>
+        </tr>`;
+      }).join('');
       const totalsHtml = `
         <tr><td colspan="2" style="padding:8px;text-align:right;border:1px solid #eee">Subtotal</td><td style="padding:8px;text-align:right;border:1px solid #eee">£${subtotal.toFixed(2)}</td></tr>
         <tr><td colspan="2" style="padding:8px;text-align:right;border:1px solid #eee">Discount</td><td style="padding:8px;text-align:right;border:1px solid #eee">£${discount.toFixed(2)}</td></tr>
