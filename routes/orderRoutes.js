@@ -24,7 +24,9 @@ function computeTotals(items, opts = {}) {
 }
 
 // Create order (simple)
-router.post('/api/orders/create', async (req, res) => {
+const { requireAuth } = require('./userAuth');
+
+router.post('/api/orders/create', requireAuth, async (req, res) => {
   try {
     const { customer, shippingAddress, items = [], trackingCode, isTradeCustomer = false, shippingOverride } = req.body || {};
     if (!customer || !customer.email) {
