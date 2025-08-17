@@ -8,6 +8,7 @@ const {
   adminListProducts,
   adminUpdateProduct,
   adminUpdateProductStock,
+  getBestSellers,
 } = require("../controllers/productController");
 const { requireAdmin } = require('../config/requireAdmin');
 
@@ -15,6 +16,11 @@ const { requireAdmin } = require('../config/requireAdmin');
  * Public list
  */
 router.get("/api/product/get", getAllProducts);
+
+/**
+ * Public best sellers
+ */
+router.get('/api/product/best-sellers', getBestSellers);
 
 /**
  * Admin: add product

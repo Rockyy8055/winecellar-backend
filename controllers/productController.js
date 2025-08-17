@@ -1,5 +1,6 @@
 const Product = require("../models/product");
 const Inventory = require("../models/inventory");
+const OrderDetails = require("../models/orderDetails");
 
 const getAllProducts = async (req, res) => {
   try {
@@ -134,3 +135,144 @@ module.exports = {
   adminUpdateProduct,
   adminUpdateProductStock,
 };
+
+// Best sellers (public)
+const clamp = (value, min, max, fallback) => {
+  const n = Number.parseInt(String(value ?? ''), 10);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(min, Math.min(max, n));
+};
+
+const getBestSellers = async (req, res) => {
+  try {
+    const limit = clamp(req.query.limit, 1, 30, 15);
+    const days = clamp(req.query.days, 1, 90, 7);
+    const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+
+    const pipeline = [
+      { $match: { $or: [ { created_at: { $gte: since } }, { createdAt: { $gte: since } } ] } },
+      { $unwind: '$items' },
+      {
+        $addFields: {
+          _pidCandidate: {
+            $ifNull: [
+              '$items.product',
+              { $ifNull: [
+                '$items.productId',
+                { $ifNull: [
+                  '$items.ProductId',
+                  { $ifNull: [
+                    '$items._id',
+                    { $ifNull: [
+                      '$items.id',
+                      { $ifNull: [
+                        '$items.sku',
+                        { $ifNull: [ '$items.SKU', '$items.name' ] }
+                      ] }
+                    ] }
+                  ] }
+                ] }
+              ] }
+            ]
+          }
+        }
+      },
+      { $addFields: { pid: { $toString: '$_pidCandidate' } } },
+      {
+        $group: {
+          _id: '$pid',
+          totalQty: { $sum: { $ifNull: ['$items.qty', 1] } },
+          totalSales: { $sum: { $multiply: [ { $ifNull: ['$items.qty', 1] }, { $ifNull: ['$items.price', 0] } ] } },
+          lastName: { $last: '$items.name' },
+          lastSku: { $last: '$items.sku' },
+          lastPrice: { $last: '$items.price' }
+        }
+      },
+      { $sort: { totalQty: -1, totalSales: -1 } },
+      { $limit: limit },
+      {
+        $lookup: {
+          from: Product.collection.name,
+          let: { k: '$_id', n: '$lastName', sku: '$lastSku' },
+          pipeline: [
+            { $match: { $expr: { $or: [
+              { $eq: [ { $toString: '$_id' }, '$$k' ] },
+              { $eq: [ { $toString: '$ProductId' }, '$$k' ] },
+              { $eq: [ '$name', '$$n' ] },
+              { $eq: [ '$SKU', '$$sku' ] }
+            ] } } },
+            { $limit: 1 }
+          ],
+          as: 'product'
+        }
+      }
+    ];
+
+    const rows = await OrderDetails.aggregate(pipeline).allowDiskUse(true);
+
+    const normalized = rows.map((r) => {
+      const p = Array.isArray(r.product) && r.product.length ? r.product[0] : {};
+      return {
+        id: (p._id && String(p._id)) || p.id || p.ProductId || r._id,
+        ProductId: p.ProductId || (p._id && String(p._id)) || r._id,
+        name: p.name || r.lastName || '',
+        price: Number(p.price ?? r.lastPrice ?? 0),
+        img: p.img || p.image || p.imageUrl || '',
+        imageUrl: p.imageUrl || p.img || '',
+        category: p.category || [],
+        stock: Number(p.stock ?? 0),
+        totalQty: r.totalQty,
+        totalSales: Number(r.totalSales || 0)
+      };
+    });
+
+    if (normalized.length === 0) {
+      // Fallback: all-time
+      const allTime = await OrderDetails.aggregate([
+        { $unwind: '$items' },
+        {
+          $addFields: {
+            _pidCandidate: { $ifNull: [ '$items.product', { $ifNull: [ '$items.productId', { $ifNull: [ '$items.ProductId', '$items.name' ] } ] } ] }
+          }
+        },
+        { $addFields: { pid: { $toString: '$_pidCandidate' } } },
+        { $group: { _id: '$pid', totalQty: { $sum: { $ifNull: ['$items.qty', 1] } }, lastName: { $last: '$items.name' }, lastPrice: { $last: '$items.price' } } },
+        { $sort: { totalQty: -1 } },
+        { $limit: limit },
+        {
+          $lookup: {
+            from: Product.collection.name,
+            let: { k: '$_id', n: '$lastName' },
+            pipeline: [
+              { $match: { $expr: { $or: [ { $eq: [ { $toString: '$_id' }, '$$k' ] }, { $eq: [ { $toString: '$ProductId' }, '$$k' ] }, { $eq: [ '$name', '$$n' ] } ] } } },
+              { $limit: 1 }
+            ],
+            as: 'product'
+          }
+        }
+      ]).allowDiskUse(true);
+
+      const fallback = allTime.map((r) => {
+        const p = Array.isArray(r.product) && r.product.length ? r.product[0] : {};
+        return {
+          id: (p._id && String(p._id)) || p.id || p.ProductId || r._id,
+          ProductId: p.ProductId || (p._id && String(p._id)) || r._id,
+          name: p.name || r.lastName || '',
+          price: Number(p.price ?? r.lastPrice ?? 0),
+          img: p.img || p.image || p.imageUrl || '',
+          imageUrl: p.imageUrl || p.img || '',
+          category: p.category || [],
+          stock: Number(p.stock ?? 0)
+        };
+      });
+      return res.status(200).json(fallback);
+    }
+
+    return res.status(200).json(normalized);
+  } catch (e) {
+    console.error('best-sellers error:', e);
+    return res.status(500).json({ message: 'Failed to compute best sellers' });
+  }
+};
+
+module.exports.getBestSellers = getBestSellers;
