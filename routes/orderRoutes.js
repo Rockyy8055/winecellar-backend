@@ -6,25 +6,30 @@ const { decodeUserFromAuthHeader } = require('../config/requireUser');
 const { sendMail } = require('../services/emailService');
 const OrderDetails = require('../models/orderDetails');
 
-function computeTotals(items, providedTotal) {
-  const subtotal = Array.isArray(items)
+const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
+
+function computeTotals(items, opts = {}) {
+  const { isTradeCustomer = false, shippingOverride } = opts;
+  const subtotalRaw = Array.isArray(items)
     ? items.reduce((s, it) => s + Number(it.price || 0) * Number(it.qty || 0), 0)
     : 0;
-  const shippingFee = subtotal < 100 ? 4.99 : 0;
-  const total = Number.isFinite(Number(providedTotal)) ? Number(providedTotal) : subtotal + shippingFee;
-  return { subtotal, shippingFee, total };
+  const subtotal = round2(subtotalRaw);
+  const defaultShipping = subtotal >= 100 ? 0 : 4.99;
+  const shippingFee = round2(shippingOverride != null ? Number(shippingOverride) : defaultShipping);
+  const discount = isTradeCustomer ? round2(subtotal * 0.20) : 0;
+  const vat = isTradeCustomer ? round2(subtotal * 0.20) : 0;
+  const calculatedTotal = round2(subtotal - discount + vat + shippingFee);
+  const total = calculatedTotal;
+  return { subtotal, discount, vat, shippingFee, total, isTradeCustomer: !!isTradeCustomer };
 }
 
 // Create order (simple)
 router.post('/api/orders/create', async (req, res) => {
   try {
-    const { customer, shippingAddress, items = [], total: providedTotal, trackingCode } = req.body || {};
-    const { subtotal, shippingFee, total } = computeTotals(items, providedTotal);
-    if (!Number.isFinite(Number(total))) {
-      return res.status(400).json({ error: 'total is required (number)' });
-    }
+    const { customer, shippingAddress, items = [], trackingCode, isTradeCustomer = false, shippingOverride } = req.body || {};
+    const { subtotal, discount, vat, shippingFee, total, isTradeCustomer: isTrade } = computeTotals(items, { isTradeCustomer, shippingOverride });
     const userPayload = decodeUserFromAuthHeader(req); // { sub, login }
-    const order = new OrderDetails({ customer, shippingAddress, items, subtotal, shippingFee, total, trackingCode });
+    const order = new OrderDetails({ customer, shippingAddress, items, subtotal, discount, vat, shippingFee, total, trackingCode, isTradeCustomer: isTrade });
     if (userPayload && userPayload.sub) order.user_id = userPayload.sub;
     initializeOrderMetadata(order);
     await order.save();
@@ -38,7 +43,7 @@ router.post('/api/orders/create', async (req, res) => {
       sendMail(customer.email, `Order ${order.trackingCode} confirmed`, text).catch(()=>{});
     }
 
-    res.json({ _id: order._id, trackingCode: order.trackingCode, status: order.status, subtotal, shippingFee, total });
+    res.json({ _id: order._id, trackingCode: order.trackingCode, status: order.status, subtotal, discount, vat, shippingFee, total });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -72,6 +77,17 @@ router.get('/api/orders/track/:trackingCode', async (req, res) => {
       });
     }
     return res.json({ trackingCode: order.trackingCode, status: order.status });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Pricing endpoint (no persistence)
+router.post('/api/orders/price', (req, res) => {
+  try {
+    const { items = [], isTradeCustomer = false, shippingOverride } = req.body || {};
+    const { subtotal, discount, vat, shippingFee, total } = computeTotals(items, { isTradeCustomer, shippingOverride });
+    return res.json({ subtotal, discount, vat, shipping: shippingFee, total });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

@@ -20,11 +20,14 @@ const orderDetailsSchema = new mongoose.Schema({
     },
   ],
   subtotal: { type: Number, default: 0 },
+  discount: { type: Number, default: 0 },
+  vat: { type: Number, default: 0 },
   shippingFee: { type: Number, default: 0 },
   total: {
     type: Number,
     required: true,
   },
+  isTradeCustomer: { type: Boolean, default: false },
   payment_id: {
     type: mongoose.Schema.Types.ObjectId,
     ref: "UserPayment",
