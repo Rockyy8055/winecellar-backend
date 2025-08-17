@@ -3,6 +3,8 @@ const cors = require('cors');
 const allowedOrigins = [
   'http://localhost:4000',
   'https://winecellar-frontend.vercel.app', // your Vercel site
+  'https://winecellar.co.in',               // custom domain (root)
+  'https://www.winecellar.co.in',           // custom domain (www)
   /\.vercel\.app$/                           // allow preview URLs
 ];
 
