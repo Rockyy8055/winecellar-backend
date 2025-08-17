@@ -30,9 +30,16 @@ router.post('/api/orders/create', async (req, res) => {
     if (!customer || !customer.email) {
       return res.status(400).json({ error: 'customer.email is required' });
     }
-    const { subtotal, discount, vat, shippingFee, total, isTradeCustomer: isTrade } = computeTotals(items, { isTradeCustomer, shippingOverride });
+    // Detect Pick & Pay
+    const m = String((req.body && req.body.method) || '').toLowerCase();
+    const isPickAndPay = ['cod','pick_and_pay','pickup'].includes(m);
+    let { subtotal, discount, vat, shippingFee, total, isTradeCustomer: isTrade } = computeTotals(items, { isTradeCustomer, shippingOverride });
+    if (isPickAndPay) {
+      shippingFee = 0;
+      total = round2(subtotal - discount + vat + shippingFee);
+    }
     const userPayload = decodeUserFromAuthHeader(req); // { sub, login }
-    const order = new OrderDetails({ customer, shippingAddress, items, subtotal, discount, vat, shippingFee, total, trackingCode, isTradeCustomer: isTrade });
+    const order = new OrderDetails({ method: m, customer, shippingAddress, items, subtotal, discount, vat, shippingFee, total, trackingCode, isTradeCustomer: isTrade });
     if (userPayload && userPayload.sub) order.user_id = userPayload.sub;
     initializeOrderMetadata(order);
     await order.save();
@@ -72,6 +79,7 @@ router.post('/api/orders/create', async (req, res) => {
           <p style="margin:0 0 12px 0">Dear ${customer.name || 'Customer'},</p>
           <p style="margin:0 0 16px 0">THANK YOU FOR CHOOSING WINE CELLAR.</p>
           <p style="margin:0 0 16px 0">Your order <strong>${order.trackingCode}</strong> has been received.</p>
+          <p style="margin:0 0 16px 0"><strong>Payment method:</strong> ${isPickAndPay ? 'Pick and Pay (pay on pickup)' : 'Online payment'}</p>
           <table style="border-collapse:collapse;width:100%;margin:10px 0">
             <thead>
               <tr>

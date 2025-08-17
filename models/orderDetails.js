@@ -19,6 +19,7 @@ const orderDetailsSchema = new mongoose.Schema({
       price: { type: Number },
     },
   ],
+  method: { type: String },
   subtotal: { type: Number, default: 0 },
   discount: { type: Number, default: 0 },
   vat: { type: Number, default: 0 },
