@@ -80,10 +80,20 @@ const adminUpdateProduct = async (req, res) => {
     const id = req.params.id;
     const update = req.body || {};
     update.modified_at = new Date();
-    const doc = await Product.findByIdAndUpdate(id, { $set: update }, { new: true });
+    const doc = await Product.findByIdAndUpdate(
+      id,
+      { $set: update },
+      { new: true, runValidators: true, context: 'query' }
+    );
     if (!doc) return res.status(404).json({ error: 'Not found' });
     res.json(doc);
   } catch (e) {
+    if (e?.name === 'CastError') {
+      return res.status(400).json({ error: 'Invalid product id' });
+    }
+    if (e?.name === 'ValidationError') {
+      return res.status(400).json({ error: 'Validation failed', details: e.errors });
+    }
     res.status(500).json({ error: e.message });
   }
 };
