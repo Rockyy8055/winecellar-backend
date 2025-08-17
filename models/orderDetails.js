@@ -29,6 +29,7 @@ const orderDetailsSchema = new mongoose.Schema({
     required: true,
   },
   isTradeCustomer: { type: Boolean, default: false },
+  estimatedDelivery: { type: Date },
   payment_id: {
     type: mongoose.Schema.Types.ObjectId,
     ref: "UserPayment",

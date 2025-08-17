@@ -40,24 +40,21 @@ router.post('/api/orders/create', requireAuth, async (req, res) => {
       shippingFee = 0;
       total = round2(subtotal - discount + vat + shippingFee);
     }
-    const userPayload = decodeUserFromAuthHeader(req); // { sub, login }
-    const order = new OrderDetails({ method: m, customer, shippingAddress, items, subtotal, discount, vat, shippingFee, total, trackingCode, isTradeCustomer: isTrade });
+    const userPayload = { sub: req.userId }; // cookie auth
+    // ETA: +2 business days
+    const eta = (() => {
+      const d = new Date();
+      let add = 2; while (add > 0) { d.setDate(d.getDate()+1); const w=d.getDay(); if (w!==0 && w!==6) add--; }
+      return d;
+    })();
+    const order = new OrderDetails({ method: m, customer, shippingAddress, items, subtotal, discount, vat, shippingFee, total, trackingCode, isTradeCustomer: isTrade, estimatedDelivery: eta });
     if (userPayload && userPayload.sub) order.user_id = userPayload.sub;
     initializeOrderMetadata(order);
     await order.save();
 
     // fire-and-forget emails (owner + customer receipt)
     emailOwnerOrderPlaced(order).catch(()=>{});
-    const eta = (() => {
-      const d = new Date();
-      let add = 2; // +2 business days
-      while (add > 0) {
-        d.setDate(d.getDate() + 1);
-        const day = d.getDay();
-        if (day !== 0 && day !== 6) add -= 1; // skip Sun(0)/Sat(6)
-      }
-      return d;
-    })();
+    const eta = order.estimatedDelivery;
     try {
       const brand = '#350008';
       const itemsRows = (items || []).map(it => {
@@ -125,14 +122,16 @@ router.get('/api/orders/:id', getOrder);
 // Update order status (admin)
 router.patch('/api/orders/:id/status', requireAdmin, updateOrderStatus);
 
-// Public tracking by tracking code — minimal if not owner
+// Tracking by tracking code — full details for owner only (cookie auth optional)
 router.get('/api/orders/track/:trackingCode', async (req, res) => {
   try {
     const code = req.params.trackingCode;
     const order = await OrderDetails.findOne({ trackingCode: code });
     if (!order) return res.status(404).json({ status: 'NOT_FOUND' });
-    const userPayload = decodeUserFromAuthHeader(req);
-    const isOwner = userPayload && String(userPayload.sub) === String(order.user_id || '');
+    // Check cookie user first; fallback to bearer if present
+    const cookieUserId = (req.cookies && req.cookies.auth_token) ? (require('jsonwebtoken').verify(req.cookies.auth_token, process.env.JWT_SECRET || 'dev-secret').userId) : null;
+    const bearer = decodeUserFromAuthHeader(req);
+    const isOwner = (cookieUserId && String(cookieUserId) === String(order.user_id || '')) || (bearer && String(bearer.sub) === String(order.user_id || ''));
     if (isOwner) {
       return res.json({
         trackingCode: order.trackingCode,
@@ -144,9 +143,11 @@ router.get('/api/orders/track/:trackingCode', async (req, res) => {
         subtotal: order.subtotal,
         shippingFee: order.shippingFee,
         total: order.total,
+        createdAt: order.created_at,
+        estimatedDelivery: order.estimatedDelivery,
       });
     }
-    return res.json({ trackingCode: order.trackingCode, status: order.status });
+    return res.json({ trackingCode: order.trackingCode, status: order.status, estimatedDelivery: order.estimatedDelivery });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
