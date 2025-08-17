@@ -54,7 +54,7 @@ router.post('/api/orders/create', requireAuth, async (req, res) => {
 
     // fire-and-forget emails (owner + customer receipt)
     emailOwnerOrderPlaced(order).catch(()=>{});
-    const eta = order.estimatedDelivery;
+    const etaEmail = order.estimatedDelivery;
     try {
       const brand = '#350008';
       const itemsRows = (items || []).map(it => {
@@ -97,7 +97,7 @@ router.post('/api/orders/create', requireAuth, async (req, res) => {
           </table>
           <p style="margin:12px 0 0 0"><strong>Shipping address</strong><br/>
           ${addr.line1 || ''}<br/>${addr.city || ''} ${addr.postcode || ''}</p>
-          <p style="margin:12px 0 0 0">Estimated delivery: <strong>${eta.toDateString()}</strong></p>
+          <p style="margin:12px 0 0 0">Estimated delivery: <strong>${etaEmail.toDateString()}</strong></p>
           <p style="margin:12px 0 0 0">Track your order: <a href="${trackUrl}">${trackUrl}</a></p>
           <p style="margin:16px 0 0 0">Warm regards,<br/>Wine Cellar Team</p>
         </div>
