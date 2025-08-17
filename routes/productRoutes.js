@@ -9,6 +9,7 @@ const {
   adminUpdateProduct,
   adminUpdateProductStock,
   getBestSellers,
+  adminDeleteProduct,
 } = require("../controllers/productController");
 const { requireAdmin } = require('../config/requireAdmin');
 
@@ -47,5 +48,10 @@ router.patch('/api/admin/products/:id/stock', requireAdmin, adminUpdateProductSt
  * Admin: delete all (danger)
  */
 router.delete("/api/product/delete-all", requireAdmin, deleteAllProducts);
+
+/**
+ * Admin: delete one product
+ */
+router.delete('/api/admin/products/:id', requireAdmin, adminDeleteProduct);
 
 module.exports = router;

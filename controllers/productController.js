@@ -65,7 +65,8 @@ const deleteAllProducts = async (req, res) => {
 const adminListProducts = async (req, res) => {
   try {
     const page = Math.max(1, parseInt(req.query.page || '1', 10));
-    const limit = Math.max(1, Math.min(100, parseInt(req.query.limit || '20', 10)));
+    const rawLimit = parseInt(req.query.limit || '20', 10);
+    const limit = Math.max(1, Math.min(5000, Number.isFinite(rawLimit) ? rawLimit : 20));
     const q = (req.query.q || '').trim();
     const filter = q ? { name: { $regex: q, $options: 'i' } } : {};
     const total = await Product.countDocuments(filter);
@@ -127,6 +128,22 @@ const adminUpdateProductStock = async (req, res) => {
   }
 };
 
+// Admin: delete one product
+const adminDeleteProduct = async (req, res) => {
+  try {
+    const id = req.params.id;
+    if (!id) return res.status(400).json({ message: 'Invalid product id' });
+    const doc = await Product.findByIdAndDelete(id);
+    if (!doc) return res.status(404).json({ message: 'Product not found' });
+    // Optional: delete image from storage if you store keys
+    // if (doc.imageKey) await storage.delete(doc.imageKey)
+    return res.status(200).json({ ok: true });
+  } catch (e) {
+    if (e?.name === 'CastError') return res.status(400).json({ message: 'Invalid product id' });
+    res.status(500).json({ message: 'Failed to delete product' });
+  }
+};
+
 module.exports = {
   getAllProducts,
   addProduct,
@@ -134,6 +151,7 @@ module.exports = {
   adminListProducts,
   adminUpdateProduct,
   adminUpdateProductStock,
+  adminDeleteProduct,
 };
 
 // Best sellers (public)
