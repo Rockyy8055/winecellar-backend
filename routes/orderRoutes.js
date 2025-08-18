@@ -24,7 +24,7 @@ function computeTotals(items, opts = {}) {
 }
 
 // Create order (simple)
-const { requireAuth } = require('./userAuth');
+const { requireAuth, optionalAuth } = require('./userAuth');
 
 router.post('/api/orders/create', requireAuth, async (req, res) => {
   try {
@@ -123,13 +123,12 @@ router.get('/api/orders/:id', getOrder);
 router.patch('/api/orders/:id/status', requireAdmin, updateOrderStatus);
 
 // Tracking by tracking code — full details for owner only (cookie auth optional)
-router.get('/api/orders/track/:trackingCode', async (req, res) => {
+router.get('/api/orders/track/:trackingCode', optionalAuth, async (req, res) => {
   try {
     const code = req.params.trackingCode;
     const order = await OrderDetails.findOne({ trackingCode: code });
-    if (!order) return res.status(404).json({ status: 'NOT_FOUND' });
-    // Check cookie user first; fallback to bearer if present
-    const cookieUserId = (req.cookies && req.cookies.auth_token) ? (require('jsonwebtoken').verify(req.cookies.auth_token, process.env.JWT_SECRET || 'dev-secret').userId) : null;
+    if (!order) return res.status(404).json({ message: 'Order not found' });
+    const cookieUserId = req.userId || null;
     const bearer = decodeUserFromAuthHeader(req);
     const isOwner = (cookieUserId && String(cookieUserId) === String(order.user_id || '')) || (bearer && String(bearer.sub) === String(order.user_id || ''));
     if (isOwner) {

@@ -75,5 +75,9 @@ const orderDetailsSchema = new mongoose.Schema({
   carrierTrackingNumber: { type: String },
 });
 
+// Indexes for efficient lookups
+orderDetailsSchema.index({ trackingCode: 1 }, { unique: true, sparse: true });
+orderDetailsSchema.index({ user_id: 1 });
+
 const OrderDetails = mongoose.model("OrderDetails", orderDetailsSchema);
 module.exports = OrderDetails;

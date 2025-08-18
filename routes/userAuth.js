@@ -32,6 +32,22 @@ function requireAuth(req, res, next) {
   }
 }
 
+// Optional auth: never blocks, just sets req.userId when cookie is valid
+function optionalAuth(req, _res, next) {
+  try {
+    const token = req.cookies && req.cookies.auth_token;
+    if (token) {
+      const payload = jwt.verify(token, JWT_SECRET);
+      req.userId = payload.userId;
+    } else {
+      req.userId = null;
+    }
+  } catch (_) {
+    req.userId = null;
+  }
+  next();
+}
+
 // POST /api/auth/signup (step 1: request OTP)
 router.post('/api/auth/signup', async (req, res) => {
   try {
@@ -127,4 +143,4 @@ router.post('/api/auth/logout', requireAuth, (req, res) => {
   return res.status(200).json({ ok: true });
 });
 
-module.exports = { router, requireAuth };
+module.exports = { router, requireAuth, optionalAuth };
