@@ -152,6 +152,63 @@ router.get('/api/orders/track/:trackingCode', optionalAuth, async (req, res) => 
   }
 });
 
+// Customer cancel by tracking code (optional auth)
+router.post('/api/orders/cancel/:trackingCode', optionalAuth, async (req, res) => {
+  try {
+    const escapeRegExp = (s = '') => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const code = String(req.params.trackingCode || '').trim();
+    if (!code) return res.status(404).json({ message: 'Order not found' });
+
+    const order = await OrderDetails.findOne({ trackingCode: new RegExp(`^${escapeRegExp(code)}$`, 'i') });
+    if (!order) return res.status(404).json({ message: 'Order not found' });
+
+    const ip = (req.headers['x-forwarded-for'] || req.ip || '').toString();
+    const ua = (req.headers['user-agent'] || '').toString();
+
+    const current = String(order.status || '').toUpperCase();
+    if (current === 'CANCELLED') {
+      return res.status(409).json({ message: 'Already cancelled' });
+    }
+    const notCancellable = new Set(['SHIPPED', 'OUT_FOR_DELIVERY', 'DELIVERED']);
+    if (notCancellable.has(current)) {
+      return res.status(409).json({ message: 'Cannot cancel at this stage' });
+    }
+
+    // If cookie user exists, the order must belong to them; otherwise, behave as public cancel window
+    if (req.userId) {
+      if (String(order.user_id || '') !== String(req.userId)) {
+        // Hide existence to non-owners
+        return res.status(404).json({ message: 'Order not found' });
+      }
+    }
+
+    // Allowed cancel statuses: PLACED, CONFIRMED, PICKED, PROCESSING (PROCESSING may not be used but permitted)
+    const allowed = new Set(['PLACED', 'CONFIRMED', 'PICKED', 'PROCESSING']);
+    if (!allowed.has(current)) {
+      return res.status(409).json({ message: 'Cannot cancel at this stage' });
+    }
+
+    order.status = 'CANCELLED';
+    order.statusHistory = order.statusHistory || [];
+    order.statusHistory.push({ status: 'CANCELLED', at: new Date(), note: 'Customer cancelled' });
+
+    // Optional: restock inventory here if your system decremented stock on order creation
+    await order.save();
+
+    console.log('order cancellation', {
+      trackingCode: order.trackingCode,
+      userId: req.userId || null,
+      ip,
+      ua,
+      at: new Date().toISOString(),
+    });
+
+    return res.json({ trackingCode: order.trackingCode, status: order.status });
+  } catch (e) {
+    return res.status(500).json({ error: e.message });
+  }
+});
+
 // Pricing endpoint (no persistence)
 router.post('/api/orders/price', (req, res) => {
   try {
