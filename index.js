@@ -21,6 +21,9 @@ app.use(express.json());
 app.use(cookieParser());
 app.use(cors);
 
+// Handle preflight requests for all routes
+app.options('*', cors);
+
 connectDB();
 app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(specs)); // Serve Swagger docs
 
