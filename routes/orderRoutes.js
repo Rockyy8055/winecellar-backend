@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { getOrder, updateOrderStatus, trackOrder, initializeOrderMetadata, emailOwnerOrderPlaced } = require('../controllers/orderController');
+const { getOrder, updateOrderStatus, trackOrder, initializeOrderMetadata, emailOwnerOrderPlaced, createShipmentForOrder } = require('../controllers/orderController');
 const { requireAdmin } = require('../config/requireAdmin');
 const { decodeUserFromAuthHeader } = require('../config/requireUser');
 const { sendMail } = require('../services/emailService');
@@ -108,6 +108,17 @@ router.post('/api/orders/create', requireAuth, async (req, res) => {
       });
     } catch (err) {
       console.error('email build/send error:', err.message);
+    }
+
+    // Automatically create UPS shipment for delivery orders (not Pick & Pay)
+    if (!isPickAndPay) {
+      try {
+        await createShipmentForOrder(order._id);
+        console.log(`UPS shipment created for order ${order.trackingCode}`);
+      } catch (upsError) {
+        console.error(`UPS shipment failed for order ${order.trackingCode}:`, upsError.message);
+        // Don't fail the order creation if UPS fails - admin can create shipment manually later
+      }
     }
 
     res.json({ _id: order._id, trackingCode: order.trackingCode, status: order.status, subtotal, discount, vat, shippingFee, total });
@@ -244,6 +255,21 @@ router.get('/api/admin/orders/:id', requireAdmin, async (req, res) => {
     const order = await OrderDetails.findById(req.params.id);
     if (!order) return res.status(404).json({ error: 'Not found' });
     res.json(order);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Admin: manually create UPS shipment for an order
+router.post('/api/admin/orders/:id/create-shipment', requireAdmin, async (req, res) => {
+  try {
+    const order = await createShipmentForOrder(req.params.id);
+    res.json({ 
+      message: 'UPS shipment created successfully',
+      trackingNumber: order.carrierTrackingNumber,
+      carrier: order.carrier,
+      status: order.status
+    });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

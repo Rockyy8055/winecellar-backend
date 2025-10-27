@@ -12,7 +12,8 @@ const getAllProducts = async (req, res) => {
         ProductId: product._id,
         name: product.name,
         price: product.price,
-        desc: product.desc,
+        desc: product.desc || "",
+        description: product.description || product.desc || "",
         category: product.category,
         subCategory: product.subCategory,
         discount: product.discount || "No discount", // Default to "No discount" if not available
@@ -41,7 +42,14 @@ const getAllProducts = async (req, res) => {
 
 const addProduct = async (req, res) => {
   try {
-    const newProduct = new Product(req.body);
+    const productData = { ...req.body };
+    // Sync desc and description fields
+    if (productData.description && !productData.desc) {
+      productData.desc = productData.description;
+    } else if (productData.desc && !productData.description) {
+      productData.description = productData.desc;
+    }
+    const newProduct = new Product(productData);
     const savedProduct = await newProduct.save();
     res.status(201).json(savedProduct);
   } catch (error) {
@@ -81,6 +89,12 @@ const adminUpdateProduct = async (req, res) => {
   try {
     const id = req.params.id;
     const update = req.body || {};
+    // Sync desc and description fields when either is updated
+    if (update.description !== undefined) {
+      update.desc = update.description;
+    } else if (update.desc !== undefined) {
+      update.description = update.desc;
+    }
     update.modified_at = new Date();
     const doc = await Product.findByIdAndUpdate(
       id,

@@ -12,6 +12,12 @@ const productSchema = new mongoose.Schema({
   desc: {
     type: String,
     required: false,
+    default: "",
+  },
+  description: {
+    type: String,
+    required: false,
+    default: "",
   },
   category: {
     type: [String],
