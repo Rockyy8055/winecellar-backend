@@ -10,6 +10,10 @@ function requireAdmin(req, res, next) {
       return res.status(401).json({ error: 'Unauthorized' });
     }
     const payload = jwt.verify(token, ADMIN_JWT_SECRET);
+    // Ensure token represents an admin user
+    if (!payload || payload.sub !== 'admin') {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
     req.admin = payload; // { sub, email, iat, exp }
     next();
   } catch (e) {
