@@ -73,11 +73,9 @@ function ensureAddressLines(line1, line2) {
 
 function computeTotalWeightKg(lineItems = []) {
   const total = lineItems.reduce((acc, item) => {
-    const qtyRaw = item?.qty ?? item?.quantity ?? 0;
-    const qty = Number.isFinite(Number(qtyRaw)) ? Number(qtyRaw) : 0;
+    const qty = Number(item?.qty) > 0 ? Number(item.qty) : 0;
+    const weight = Number(item?.weightKg ?? 1);
     if (!qty) return acc;
-    const weightRaw = item?.weightKg ?? item?.weight_kg ?? item?.weight ?? 1;
-    const weight = Number.isFinite(Number(weightRaw)) ? Number(weightRaw) : 1;
     const safeWeight = weight > 0 ? weight : 1;
     return acc + safeWeight * qty;
   }, 0);
@@ -127,52 +125,6 @@ function extractUpsError(error) {
   return err;
 }
 
-function normalizeLineItem(item, index) {
-  if (!item || typeof item !== 'object') {
-    throw new Error(`Line item at index ${index} is invalid`);
-  }
-  const qty = item.qty ?? item.quantity;
-  const unitPrice = item.unitPrice ?? item.price ?? item.unit_price;
-  return {
-    id: item.id ?? item.sku ?? item.SKU ?? item.productId ?? item._id ?? String(index + 1),
-    name: item.name ?? item.title ?? item.productName ?? item.ProductName ?? item.sku ?? `Item ${index + 1}`,
-    qty,
-    unitPrice,
-    weightKg: item.weightKg ?? item.weight_kg ?? item.weight ?? 1,
-  };
-}
-
-function validateOrderPayload(payload) {
-  const missing = [];
-  if (!payload || typeof payload !== 'object') {
-    throw new Error('UPS shipment payload must be an object');
-  }
-  if (!payload.orderId) missing.push('orderId');
-  if (!payload.paymentId) missing.push('paymentId');
-  if (!payload.customer?.name) missing.push('customer.name');
-  if (!payload.customer?.email) missing.push('customer.email');
-  if (!payload.shippingAddress?.line1 && !payload.shippingAddress?.address1) missing.push('shippingAddress.line1');
-  if (!payload.shippingAddress?.city) missing.push('shippingAddress.city');
-  const hasPostal = payload.shippingAddress?.postcode || payload.shippingAddress?.postalCode || payload.shippingAddress?.zip || payload.shippingAddress?.zipCode;
-  if (!hasPostal) missing.push('shippingAddress.postcode');
-  if (!payload.shippingAddress?.country && !payload.shippingAddress?.countryCode) missing.push('shippingAddress.country');
-  if (!Array.isArray(payload.lineItems) || payload.lineItems.length === 0) missing.push('lineItems');
-
-  if (payload.lineItems) {
-    payload.lineItems.forEach((item, idx) => {
-      const normalized = normalizeLineItem(item, idx);
-      if (normalized.qty == null) missing.push(`lineItems[${idx}].qty`);
-      if (normalized.unitPrice == null) missing.push(`lineItems[${idx}].unitPrice`);
-    });
-  }
-
-  if (payload.totals?.total == null) missing.push('totals.total');
-
-  if (missing.length) {
-    throw new Error(`Missing required order fields: ${missing.join(', ')}`);
-  }
-}
-
 function buildShipmentRequest(orderPayload, config) {
   const {
     orderId,
@@ -184,8 +136,7 @@ function buildShipmentRequest(orderPayload, config) {
     currency,
   } = orderPayload;
 
-  const normalizedLineItems = lineItems.map((item, idx) => normalizeLineItem(item, idx));
-  const weightKg = computeTotalWeightKg(normalizedLineItems);
+  const weightKg = computeTotalWeightKg(lineItems);
   const shipToLines = ensureAddressLines(shippingAddress.line1 ?? shippingAddress.address1, shippingAddress.line2 ?? shippingAddress.address2);
   const shipperLines = ensureAddressLines(config.shipper.line1, config.shipper.line2);
   const shipToCountry = String(shippingAddress.country || shippingAddress.countryCode || 'GB').toUpperCase();
@@ -229,8 +180,8 @@ function buildShipmentRequest(orderPayload, config) {
           },
         },
         ShipTo: {
-          Name: shippingAddress.name || customer.name || 'Customer',
-          AttentionName: shippingAddress.name || customer.name || 'Customer',
+          Name: customer.name || 'Customer',
+          AttentionName: customer.name || 'Customer',
           Phone: customer.phone ? { Number: String(customer.phone) } : undefined,
           EMailAddress: customer.email ? String(customer.email) : undefined,
           Address: {
@@ -257,7 +208,7 @@ function buildShipmentRequest(orderPayload, config) {
         ].filter(Boolean),
         Package: [
           {
-            Description: normalizedLineItems[0]?.name ? String(normalizedLineItems[0].name).slice(0, 35) : 'Package',
+            Description: lineItems[0]?.name ? String(lineItems[0].name).slice(0, 35) : 'Package',
             Packaging: { Code: '02' },
             PackageWeight: {
               UnitOfMeasurement: { Code: 'KGS' },
@@ -287,6 +238,36 @@ function buildShipmentRequest(orderPayload, config) {
   }
 
   return shipmentRequest;
+}
+
+function validateOrderPayload(payload) {
+  const missing = [];
+  if (!payload || typeof payload !== 'object') {
+    throw new Error('UPS shipment payload must be an object');
+  }
+  if (!payload.orderId) missing.push('orderId');
+  if (!payload.paymentId) missing.push('paymentId');
+  if (!payload.customer?.name) missing.push('customer.name');
+  if (!payload.customer?.email) missing.push('customer.email');
+  if (!payload.shippingAddress?.line1 && !payload.shippingAddress?.address1) missing.push('shippingAddress.line1');
+  if (!payload.shippingAddress?.city) missing.push('shippingAddress.city');
+  if (!payload.shippingAddress?.postcode && !payload.shippingAddress?.postalCode && !payload.shippingAddress?.zip && !payload.shippingAddress?.zipCode) missing.push('shippingAddress.postcode');
+  if (!payload.shippingAddress?.country && !payload.shippingAddress?.countryCode) missing.push('shippingAddress.country');
+  if (!Array.isArray(payload.lineItems) || payload.lineItems.length === 0) missing.push('lineItems');
+  if (payload.lineItems) {
+    payload.lineItems.forEach((item, idx) => {
+      if (!item || typeof item !== 'object') {
+        missing.push(`lineItems[${idx}]`);
+        return;
+      }
+      if (item.qty == null) missing.push(`lineItems[${idx}].qty`);
+      if (item.unitPrice == null) missing.push(`lineItems[${idx}].unitPrice`);
+    });
+  }
+  if (payload.totals?.total == null) missing.push('totals.total');
+  if (missing.length) {
+    throw new Error(`Missing required order fields: ${missing.join(', ')}`);
+  }
 }
 
 async function createUPSShipment(orderPayload, envOverrides = {}) {

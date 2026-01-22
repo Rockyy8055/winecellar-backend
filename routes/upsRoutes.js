@@ -6,7 +6,61 @@ const {
   updateOrderFromUPSTracking, 
   syncAllActiveOrdersWithUPS 
 } = require('../services/upsTracking');
+const { createUPSShipment } = require('../services/upsShipment');
+const { applyShipmentResultToOrder } = require('../controllers/orderController');
 const OrderDetails = require('../models/orderDetails');
+
+/**
+ * @swagger
+ * /api/shipping/ups:
+ *   post:
+ *     summary: Create a UPS shipment for an order
+ *     tags: [UPS]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *     responses:
+ *       200:
+ *         description: UPS shipment created
+ */
+router.post('/api/shipping/ups', async (req, res) => {
+  try {
+    const payload = req.body || {};
+    const shipmentResult = await createUPSShipment(payload);
+
+    let orderSummary = null;
+    if (payload.orderId) {
+      const order = await OrderDetails.findById(payload.orderId);
+      if (order) {
+        applyShipmentResultToOrder(order, shipmentResult, 'UPS shipment created via shipping API');
+        await order.save();
+        orderSummary = {
+          id: order._id,
+          trackingCode: order.trackingCode,
+          carrierTrackingNumber: order.carrierTrackingNumber,
+          status: order.status,
+        };
+      }
+    }
+
+    return res.json({
+      trackingNumber: shipmentResult.trackingNumber,
+      shipmentIdentificationNumber: shipmentResult.shipmentIdentificationNumber,
+      label: shipmentResult.label,
+      order: orderSummary,
+    });
+  } catch (error) {
+    const status = error.statusCode || 500;
+    console.error('UPS shipment creation failed:', error.message);
+    return res.status(status).json({
+      error: error.message,
+      details: error.details,
+    });
+  }
+});
 
 /**
  * @swagger

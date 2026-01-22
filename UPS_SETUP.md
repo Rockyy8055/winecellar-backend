@@ -30,10 +30,13 @@ Add these lines to your `.env` file:
 
 ```env
 # UPS API Configuration
+UPS_ENV=sandbox # or production
 UPS_BASE_URL=https://wwwcie.ups.com
 UPS_CLIENT_ID=paste_your_client_id_here
 UPS_CLIENT_SECRET=paste_your_client_secret_here
 UPS_ACCOUNT_NUMBER=paste_your_account_number_here
+UPS_SERVICE_CODE=03
+UPS_LABEL_FORMAT=GIF
 
 # Your Warehouse Address (London)
 SHIPPER_NAME=Wine Cellar Ltd
@@ -71,9 +74,9 @@ SHIPPER_COUNTRY=GB
 
 ```
 1. Order created → Status: PLACED
-2. UPS shipment created automatically → Status: CONFIRMED
-3. UPS tracking number saved to order
-4. Customer gets email with tracking info
+2. Frontend collects payment (Stripe/PayPal) and POSTs order payload to `/api/shipping/ups`
+3. UPS shipment created → Status: CONFIRMED (tracking + label stored)
+4. Customer gets email with tracking info and link to track
 ```
 
 ### Order Status Flow:
@@ -104,6 +107,45 @@ POST /api/admin/ups/sync-all
 ```
 
 ### Public Endpoints:
+
+**Create UPS shipment (call from frontend after payment success):**
+```
+POST /api/shipping/ups
+
+{
+  "orderId": "...",
+  "paymentId": "stripe_or_paypal_payment_id",
+  "customer": {
+    "name": "...",
+    "email": "...",
+    "phone": "..."
+  },
+  "shippingAddress": {
+    "line1": "...",
+    "line2": "optional",
+    "city": "...",
+    "postcode": "...",
+    "country": "GB"
+  },
+  "lineItems": [
+    {
+      "id": "sku-1",
+      "name": "Cabernet Sauvignon",
+      "qty": 2,
+      "unitPrice": 45,
+      "weightKg": 1
+    }
+  ],
+  "totals": {
+    "subtotal": 90,
+    "shipping": 4.99,
+    "tax": 0,
+    "total": 94.99
+  }
+}
+```
+
+Returns tracking number, UPS shipment ID, and (optionally) the encoded label graphic so the frontend can show a "Track Order" CTA immediately.
 
 **Get UPS tracking info:**
 ```

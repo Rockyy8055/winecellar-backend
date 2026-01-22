@@ -73,6 +73,8 @@ const orderDetailsSchema = new mongoose.Schema({
   },
   carrier: { type: String },
   carrierTrackingNumber: { type: String },
+  carrierLabelFormat: { type: String },
+  carrierLabelData: { type: String },
 });
 
 // Indexes for efficient lookups

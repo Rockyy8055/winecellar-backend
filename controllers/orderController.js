@@ -54,27 +54,54 @@ function initializeOrderMetadata(orderDoc) {
   return orderDoc;
 }
 
+function buildUPSShipmentPayloadFromOrder(order) {
+  const shippingAddress = order.shippingAddress || {};
+  const lineItems = Array.isArray(order.items)
+    ? order.items.map((item, idx) => ({
+        id: item.sku || item.SKU || item.id || item.productId || String(idx + 1),
+        name: item.name || item.title || item.productName || item.ProductName || item.sku || `Item ${idx + 1}`,
+        qty: item.qty ?? item.quantity ?? 1,
+        unitPrice: item.price ?? item.unitPrice ?? item.unit_price ?? 0,
+        weightKg: item.weightKg ?? item.weight_kg ?? item.weight ?? 1,
+      }))
+    : [];
+
+  return {
+    orderId: String(order._id),
+    paymentId: order.paymentReference || (order.payment_id ? String(order.payment_id) : undefined),
+    customer: order.customer || {},
+    shippingAddress,
+    lineItems,
+    totals: {
+      subtotal: order.subtotal ?? 0,
+      shipping: order.shippingFee ?? 0,
+      tax: order.vat ?? 0,
+      total: order.total ?? 0,
+    },
+    currency: order.currency || 'GBP',
+  };
+}
+
+function applyShipmentResultToOrder(order, shipmentResult, note) {
+  order.carrier = 'UPS';
+  order.carrierTrackingNumber = shipmentResult.trackingNumber || shipmentResult.shipmentIdentificationNumber;
+  if (shipmentResult.label) {
+    order.carrierLabelFormat = shipmentResult.label.format || null;
+    order.carrierLabelData = shipmentResult.label.data || null;
+  }
+  order.status = 'CONFIRMED';
+  order.statusHistory = Array.isArray(order.statusHistory) ? order.statusHistory : [];
+  order.statusHistory.push({ status: 'CONFIRMED', note, at: new Date() });
+  order.modified_at = new Date();
+}
+
 async function createShipmentForOrder(orderId) {
   const order = await OrderDetails.findById(orderId);
   if (!order) throw new Error('Order not found');
-  const env = {
-    UPS_BASE_URL: process.env.UPS_BASE_URL,
-    UPS_CLIENT_ID: process.env.UPS_CLIENT_ID,
-    UPS_CLIENT_SECRET: process.env.UPS_CLIENT_SECRET,
-    UPS_ACCOUNT_NUMBER: process.env.UPS_ACCOUNT_NUMBER,
-    SHIPPER_NAME: process.env.SHIPPER_NAME,
-    SHIPPER_PHONE: process.env.SHIPPER_PHONE,
-    SHIPPER_ADDRESS_LINE1: process.env.SHIPPER_ADDRESS_LINE1,
-    SHIPPER_CITY: process.env.SHIPPER_CITY,
-    SHIPPER_POSTCODE: process.env.SHIPPER_POSTCODE,
-    SHIPPER_COUNTRY: process.env.SHIPPER_COUNTRY,
-  };
-  const { trackingNumber, shipmentId } = await createUPSShipment(order, env);
-  order.carrier = 'UPS';
-  order.carrierTrackingNumber = trackingNumber || shipmentId;
-  order.status = 'CONFIRMED';
-  order.statusHistory.push({ status: 'CONFIRMED', note: 'UPS shipment created' });
-  order.modified_at = new Date();
+
+  const shipmentPayload = buildUPSShipmentPayloadFromOrder(order);
+  const shipmentResult = await createUPSShipment(shipmentPayload);
+  applyShipmentResultToOrder(order, shipmentResult, 'UPS shipment created');
   await order.save();
   return order;
 }
@@ -110,4 +137,13 @@ async function emailOwnerOrderPlaced(order) {
   }
 }
 
-module.exports = { getOrder, trackOrder, updateOrderStatus, initializeOrderMetadata, createShipmentForOrder, emailOwnerOrderPlaced };
+module.exports = {
+  getOrder,
+  trackOrder,
+  updateOrderStatus,
+  initializeOrderMetadata,
+  createShipmentForOrder,
+  emailOwnerOrderPlaced,
+  buildUPSShipmentPayloadFromOrder,
+  applyShipmentResultToOrder,
+};
