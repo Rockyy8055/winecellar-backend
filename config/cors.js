@@ -1,45 +1,64 @@
-const cors = require('cors');
-
-// CORS configuration for web and mobile app support
 const allowedOrigins = [
   'http://localhost:3000',
   'http://localhost:4000',
-  'https://winecellar-frontend.vercel.app', // your Vercel site
-  'https://winecellar.co.in',               // custom domain (root)
-  'https://www.winecellar.co.in',           // custom domain (www)
+  'http://localhost:5173',
+  'http://localhost:5174',
+  'https://winecellar-frontend.vercel.app',
+  'https://winecellar.co.in',
+  'https://www.winecellar.co.in',
   'https://winecellar-frontend-79dh3mlxwg-rockyy8055s-projects.vercel.app',
-  'capacitor://localhost',                  // Mobile app (Capacitor)
-  'ionic://localhost',                      // Mobile app (Ionic)
-  'http://localhost',                       // Mobile app local
-  'https://localhost',                      // Mobile app HTTPS
-  /\.vercel\.app$/                          // allow preview URLs
+  'capacitor://localhost',
+  'ionic://localhost',
+  'http://localhost',
+  'https://localhost'
 ];
 
-const corsOptions = {
-  origin: (origin, cb) => {
-    // Allow requests with no origin (mobile apps, Postman, curl)
-    if (!origin) return cb(null, true);
-    
-    // Allow all Capacitor and Ionic origins
-    if (origin && (origin.startsWith('capacitor://') || origin.startsWith('ionic://'))) {
-      return cb(null, true);
-    }
-    
-    // Check if origin is in allowed list
-    const ok = allowedOrigins.some(o => (o instanceof RegExp ? o.test(origin) : o === origin));
-    
-    // For development: allow all origins (remove in production if needed)
-    // Comment out the line below for stricter production security
-    if (!ok) return cb(null, true);
-    
-    return ok ? cb(null, true) : cb(new Error(`CORS blocked for ${origin}`));
-  },
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'Origin', 'X-Requested-With'],
-  exposedHeaders: ['Content-Length', 'Content-Type'],
-  credentials: true,
-  optionsSuccessStatus: 204,
-  maxAge: 86400 // 24 hours - cache preflight requests
-};
+const allowedOriginPatterns = [/\.vercel\.app$/i];
 
-module.exports = cors(corsOptions);
+const ALLOWED_METHODS = ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'];
+const ALLOWED_HEADERS = ['Content-Type', 'Authorization', 'Accept', 'Origin', 'X-Requested-With'];
+const EXPOSED_HEADERS = ['Content-Length', 'Content-Type'];
+
+function isAllowedOrigin(origin) {
+  if (!origin) {
+    return true;
+  }
+
+  const normalized = origin.toLowerCase();
+  const stringMatch = allowedOrigins.some((candidate) => candidate.toLowerCase() === normalized);
+  const patternMatch = allowedOriginPatterns.some((pattern) => pattern.test(origin));
+  return stringMatch || patternMatch;
+}
+
+function applyCorsHeaders(res, origin) {
+  if (!origin) {
+    return;
+  }
+
+  res.header('Access-Control-Allow-Origin', origin);
+  res.header('Access-Control-Allow-Credentials', 'true');
+  res.header('Access-Control-Allow-Methods', ALLOWED_METHODS.join(', '));
+  res.header('Access-Control-Allow-Headers', ALLOWED_HEADERS.join(', '));
+  res.header('Access-Control-Expose-Headers', EXPOSED_HEADERS.join(', '));
+  res.header('Vary', 'Origin');
+}
+
+module.exports = function corsMiddleware(req, res, next) {
+  const origin = req.headers.origin;
+
+  if (isAllowedOrigin(origin)) {
+    applyCorsHeaders(res, origin);
+  }
+
+  if (req.method === 'OPTIONS') {
+    if (!isAllowedOrigin(origin)) {
+      return res.status(403).json({ error: `CORS blocked for origin: ${origin}` });
+    }
+
+    applyCorsHeaders(res, origin);
+    res.header('Access-Control-Max-Age', '86400');
+    return res.sendStatus(204);
+  }
+
+  return next();
+};
