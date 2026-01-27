@@ -5,18 +5,12 @@ const maxFileSizeBytes = Math.max(1, MAX_FILE_SIZE_MB) * 1024 * 1024;
 
 const storage = multer.memoryStorage();
 
-const allowedMimeTypes = new Set([
-  'image/jpeg',
-  'image/png',
-  'image/webp',
-  'image/gif',
-]);
-
+// Allow all image types - only validate that it starts with 'image/'
 function fileFilter(req, file, cb) {
-  if (allowedMimeTypes.has(file.mimetype)) {
+  if (file.mimetype && file.mimetype.toLowerCase().startsWith('image/')) {
     return cb(null, true);
   }
-  cb(new Error('Unsupported image type'));
+  cb(new Error('Only image files are allowed'));
 }
 
 const upload = multer({

@@ -8,21 +8,40 @@ const MAX_FILE_SIZE_MB = Number(process.env.UPLOAD_MAX_FILE_SIZE_MB || 5);
 const MAX_FILE_SIZE_BYTES = Math.max(1, MAX_FILE_SIZE_MB) * 1024 * 1024;
 const BASE_URL = process.env.BASE_URL || 'http://localhost:5001';
 
-// Allowed MIME types
-const ALLOWED_MIME_TYPES = new Set([
-  'image/jpeg',
-  'image/png', 
-  'image/webp',
-  'image/gif'
-]);
+// Allow all image types - only validate that it starts with 'image/'
+function isImageMimeType(mimeType) {
+  return mimeType && mimeType.toLowerCase().startsWith('image/');
+}
 
-// MIME type to file extension mapping
+// Common MIME type to file extension mapping
 const MIME_EXTENSIONS = {
   'image/jpeg': '.jpg',
+  'image/jpg': '.jpg',
   'image/png': '.png',
   'image/webp': '.webp',
-  'image/gif': '.gif'
+  'image/gif': '.gif',
+  'image/svg+xml': '.svg',
+  'image/bmp': '.bmp',
+  'image/tiff': '.tiff',
+  'image/x-icon': '.ico',
+  'image/vnd.microsoft.icon': '.ico'
 };
+
+// Get file extension from MIME type or default to .jpg
+function getFileExtension(mimeType) {
+  const ext = MIME_EXTENSIONS[mimeType?.toLowerCase()];
+  if (ext) return ext;
+  
+  // For unknown image types, try to extract from MIME type
+  if (mimeType && mimeType.startsWith('image/')) {
+    const subtype = mimeType.split('/')[1];
+    if (subtype) {
+      return '.' + subtype.replace(/[^a-z0-9]/g, '').toLowerCase();
+    }
+  }
+  
+  return '.jpg'; // default fallback
+}
 
 // Ensure upload directory exists
 function ensureUploadDir() {
@@ -55,8 +74,9 @@ function parseDataUrl(dataUrl) {
 
   const [, mimeType, base64Data] = matches;
   
-  if (!ALLOWED_MIME_TYPES.has(mimeType)) {
-    throw new Error(`Unsupported image type: ${mimeType}. Allowed types: ${Array.from(ALLOWED_MIME_TYPES).join(', ')}`);
+  // Allow all image types
+  if (!isImageMimeType(mimeType)) {
+    throw new Error(`Invalid image type: ${mimeType}. Only image files are allowed.`);
   }
 
   return {
@@ -72,9 +92,9 @@ function validateImageFile(buffer, mimeType) {
     throw new Error(`File size ${Math.round(buffer.length / 1024 / 1024)}MB exceeds maximum allowed size of ${MAX_FILE_SIZE_MB}MB`);
   }
 
-  // Check MIME type
-  if (!ALLOWED_MIME_TYPES.has(mimeType)) {
-    throw new Error(`Unsupported image type: ${mimeType}. Allowed types: ${Array.from(ALLOWED_MIME_TYPES).join(', ')}`);
+  // Check if it's an image type (allow all image types)
+  if (!isImageMimeType(mimeType)) {
+    throw new Error(`Invalid image type: ${mimeType}. Only image files are allowed.`);
   }
 }
 
@@ -82,7 +102,7 @@ function validateImageFile(buffer, mimeType) {
 function generateUniqueFilename(productId, originalName = '', mimeType = '') {
   const timestamp = Date.now();
   const random = crypto.randomBytes(4).toString('hex');
-  const ext = MIME_EXTENSIONS[mimeType] || path.extname(originalName) || '.jpg';
+  const ext = getFileExtension(mimeType) || path.extname(originalName) || '.jpg';
   const safeName = sanitizeFilename(originalName) || 'image';
   return `${productId}-${timestamp}-${random}-${safeName}${ext}`;
 }

@@ -219,6 +219,13 @@ function buildProductPayloadFromBody(body = {}) {
 
 const addProduct = async (req, res) => {
   try {
+    console.log('Add product request received:', {
+      hasFile: !!req.file,
+      hasImg: !!req.body.img,
+      hasImageUrl: !!req.body.imageUrl,
+      imgType: req.body.img ? (req.body.img.startsWith('data:') ? 'data-url' : 'url') : 'none'
+    });
+
     const basePayload = buildProductPayloadFromBody(req.body || {});
     const newProduct = new Product(basePayload);
 
@@ -226,9 +233,12 @@ const addProduct = async (req, res) => {
     const imageInput = req.file || req.body.img || req.body.imageUrl;
     if (imageInput) {
       try {
+        console.log('Processing image upload...');
         const { url } = await uploadProductImage(newProduct._id, imageInput);
         newProduct.img = url;
+        console.log('Image uploaded successfully:', url);
       } catch (uploadError) {
+        console.error('Image upload failed:', uploadError.message);
         return res.status(400).json({ 
           error: 'Image upload failed', 
           details: uploadError.message 
@@ -237,8 +247,10 @@ const addProduct = async (req, res) => {
     }
 
     const savedProduct = await newProduct.save();
+    console.log('Product saved successfully:', savedProduct._id);
     res.status(201).json(savedProduct);
   } catch (error) {
+    console.error('Error adding product:', error.message);
     res.status(500).json({ message: "Error adding product", error: error.message });
   }
 };
@@ -285,6 +297,14 @@ const adminListProducts = async (req, res) => {
 const adminUpdateProduct = async (req, res) => {
   try {
     const id = req.params.id;
+    console.log('Update product request received:', {
+      id,
+      hasFile: !!req.file,
+      hasImg: !!req.body.img,
+      hasImageUrl: !!req.body.imageUrl,
+      imgType: req.body.img ? (req.body.img.startsWith('data:') ? 'data-url' : 'url') : 'none'
+    });
+
     const update = buildProductPayloadFromBody(req.body || {});
 
     // Get existing product to check for old image
@@ -295,10 +315,13 @@ const adminUpdateProduct = async (req, res) => {
     const imageInput = req.file || req.body.img || req.body.imageUrl;
     if (imageInput) {
       try {
+        console.log('Processing image update...');
         const oldImageUrl = existingProduct.img;
         const { url } = await uploadProductImage(id, imageInput, oldImageUrl);
         update.img = url;
+        console.log('Image updated successfully:', url);
       } catch (uploadError) {
+        console.error('Image update failed:', uploadError.message);
         return res.status(400).json({ 
           error: 'Image upload failed', 
           details: uploadError.message 
@@ -314,8 +337,11 @@ const adminUpdateProduct = async (req, res) => {
       { new: true, runValidators: true, context: 'query' }
     );
     if (!doc) return res.status(404).json({ error: 'Not found' });
+    
+    console.log('Product updated successfully:', id);
     res.json(doc);
   } catch (e) {
+    console.error('Error updating product:', e.message);
     if (e?.name === 'CastError') {
       return res.status(400).json({ error: 'Invalid product id' });
     }
