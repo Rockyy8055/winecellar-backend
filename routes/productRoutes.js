@@ -12,6 +12,7 @@ const {
   adminDeleteProduct,
 } = require("../controllers/productController");
 const { requireAdmin } = require('../config/requireAdmin');
+const { adminProductImageUpload } = require('../middleware/upload');
 
 /**
  * Public list
@@ -26,7 +27,8 @@ router.get('/api/product/best-sellers', getBestSellers);
 /**
  * Admin: add product
  */
-router.post("/api/product/add", requireAdmin, addProduct);
+router.post("/api/product/add", requireAdmin, adminProductImageUpload, addProduct);
+router.post('/api/admin/products', requireAdmin, adminProductImageUpload, addProduct);
 
 /**
  * Admin: list products (raw for admin table)
@@ -36,7 +38,7 @@ router.get('/api/admin/products', requireAdmin, adminListProducts);
 /**
  * Admin: update product (price, desc, img, etc.)
  */
-router.patch('/api/admin/products/:id', requireAdmin, adminUpdateProduct);
+router.patch('/api/admin/products/:id', requireAdmin, adminProductImageUpload, adminUpdateProduct);
 
 /**
  * Admin: update stock (set or adjust)

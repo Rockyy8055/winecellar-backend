@@ -1,6 +1,74 @@
 const Product = require("../models/product");
 const Inventory = require("../models/inventory");
 const OrderDetails = require("../models/orderDetails");
+const { uploadProductImage } = require('../services/productImageUpload');
+
+function syncDescriptionFields(payload = {}) {
+  if (payload.description !== undefined && payload.desc === undefined) {
+    payload.desc = payload.description;
+  } else if (payload.desc !== undefined && payload.description === undefined) {
+    payload.description = payload.desc;
+  }
+}
+
+function normalizeCategoryInput(raw) {
+  if (raw === undefined || raw === null) {
+    return undefined;
+  }
+  if (Array.isArray(raw)) {
+    return raw.map((value) => String(value).trim()).filter(Boolean);
+  }
+  if (typeof raw === 'string') {
+    const trimmed = raw.trim();
+    if (!trimmed) {
+      return [];
+    }
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (Array.isArray(parsed)) {
+        return parsed.map((value) => String(value).trim()).filter(Boolean);
+      }
+    } catch (_) {
+      // ignore JSON parse errors and fall back to comma split
+    }
+    return trimmed
+      .split(',')
+      .map((value) => value.trim())
+      .filter(Boolean);
+  }
+  return undefined;
+}
+
+function coerceNumber(value) {
+  if (value === undefined || value === null || value === '') {
+    return undefined;
+  }
+  const num = Number(value);
+  return Number.isFinite(num) ? num : undefined;
+}
+
+function coerceBoolean(value) {
+  if (value === undefined || value === null || value === '') {
+    return undefined;
+  }
+  if (typeof value === 'boolean') {
+    return value;
+  }
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (['true', '1', 'yes', 'on'].includes(normalized)) {
+      return true;
+    }
+    if (['false', '0', 'no', 'off'].includes(normalized)) {
+      return false;
+    }
+  }
+  return undefined;
+}
+
+function stripUndefined(obj = {}) {
+  return Object.fromEntries(Object.entries(obj).filter(([, value]) => value !== undefined));
+}
 
 const getAllProducts = async (req, res) => {
   try {
@@ -8,6 +76,7 @@ const getAllProducts = async (req, res) => {
 
     // Format response as per the provided JSON structure
     const formattedProducts = products.map((product) => {
+      const imageUrl = product.img || '';
       return {
         ProductId: product._id,
         name: product.name,
@@ -28,7 +97,8 @@ const getAllProducts = async (req, res) => {
         Region: product.Region || "Unknown Region",
         taxable: product.taxable,
         brand: product.brand || "Unknown Brand",
-        img: product.img || "", // Empty string if no image path
+        img: imageUrl,
+        imageUrl,
         stock: product.stock,
       };
     });
@@ -40,20 +110,82 @@ const getAllProducts = async (req, res) => {
   }
 };
 
+function normalizeTagsInput(raw) {
+  if (raw === undefined || raw === null) {
+    return undefined;
+  }
+  if (Array.isArray(raw)) {
+    return raw.map((value) => String(value).trim()).filter(Boolean);
+  }
+  if (typeof raw === 'string') {
+    const trimmed = raw.trim();
+    if (!trimmed) {
+      return [];
+    }
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (Array.isArray(parsed)) {
+        return parsed.map((value) => String(value).trim()).filter(Boolean);
+      }
+    } catch (_) {
+      // ignore JSON parse errors and fall back to comma split
+    }
+    return trimmed
+      .split(',')
+      .map((value) => value.trim())
+      .filter(Boolean);
+  }
+  return undefined;
+}
+
+function buildProductPayloadFromBody(body = {}) {
+  const payload = {
+    name: body.name,
+    desc: body.desc,
+    description: body.description,
+    category: normalizeCategoryInput(body.category),
+    subCategory: body.subCategory,
+    discount: body.discount,
+    size: body.size,
+    SKU: body.SKU,
+    tags: normalizeTagsInput(body.tags),
+    vendor: body.vendor,
+    Country: body.Country,
+    Region: body.Region,
+    taxable: coerceBoolean(body.taxable),
+    brand: body.brand,
+    img: body.img || body.imageUrl,
+  };
+
+  const price = coerceNumber(body.price);
+  if (price !== undefined) {
+    payload.price = price;
+  }
+
+  const stock = coerceNumber(body.stock);
+  if (stock !== undefined) {
+    payload.stock = Math.max(0, Math.floor(stock));
+  }
+
+  syncDescriptionFields(payload);
+
+  return stripUndefined(payload);
+}
+
 const addProduct = async (req, res) => {
   try {
-    const productData = { ...req.body };
-    // Sync desc and description fields
-    if (productData.description && !productData.desc) {
-      productData.desc = productData.description;
-    } else if (productData.desc && !productData.description) {
-      productData.description = productData.desc;
+    const basePayload = buildProductPayloadFromBody(req.body || {});
+    const newProduct = new Product(basePayload);
+
+    if (req.file) {
+      const { url } = await uploadProductImage(newProduct._id, req.file);
+      newProduct.img = url;
     }
-    const newProduct = new Product(productData);
+
     const savedProduct = await newProduct.save();
     res.status(201).json(savedProduct);
   } catch (error) {
-    res.status(500).json({ message: "Error adding product", error });
+    res.status(500).json({ message: "Error adding product", error: error.message });
   }
 };
 
@@ -88,14 +220,15 @@ const adminListProducts = async (req, res) => {
 const adminUpdateProduct = async (req, res) => {
   try {
     const id = req.params.id;
-    const update = req.body || {};
-    // Sync desc and description fields when either is updated
-    if (update.description !== undefined) {
-      update.desc = update.description;
-    } else if (update.desc !== undefined) {
-      update.description = update.desc;
+    const update = buildProductPayloadFromBody(req.body || {});
+
+    if (req.file) {
+      const { url } = await uploadProductImage(id, req.file);
+      update.img = url;
     }
+
     update.modified_at = new Date();
+
     const doc = await Product.findByIdAndUpdate(
       id,
       { $set: update },
