@@ -1,4 +1,5 @@
 const DEFAULT_PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || process.env.BASE_URL || 'https://api.winecellar.co.in').replace(/\/$/, '');
+const S3_BUCKET_URL = 'https://winecellar-product-images.s3.ap-south-1.amazonaws.com';
 
 function ensureLeadingSlash(value = '') {
   if (!value) return '';
@@ -10,22 +11,18 @@ function toPublicUrl(pathOrUrl) {
     return '';
   }
 
-  const baseOrigin = DEFAULT_PUBLIC_BASE_URL;
-
+  // If it's already a full URL, return as-is
   if (/^https?:\/\//i.test(pathOrUrl)) {
-    try {
-      const url = new URL(pathOrUrl);
-      const base = new URL(baseOrigin);
-      url.protocol = base.protocol;
-      url.host = base.host;
-      return url.toString();
-    } catch (_) {
-      const withoutHost = pathOrUrl.replace(/^https?:\/\/[^/]+/i, '');
-      return `${baseOrigin}${ensureLeadingSlash(withoutHost)}`;
-    }
+    return pathOrUrl;
   }
 
-  return `${baseOrigin}${ensureLeadingSlash(pathOrUrl)}`;
+  // For image paths, use S3 bucket URL
+  if (pathOrUrl.includes('uploads/') || pathOrUrl.includes('products/')) {
+    return `${S3_BUCKET_URL}${ensureLeadingSlash(pathOrUrl)}`;
+  }
+
+  // For other paths, use default base URL
+  return `${DEFAULT_PUBLIC_BASE_URL}${ensureLeadingSlash(pathOrUrl)}`;
 }
 
 module.exports = {
