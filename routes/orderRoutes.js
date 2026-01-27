@@ -47,7 +47,7 @@ router.post('/api/orders/create', requireAuth, async (req, res) => {
       let add = 2; while (add > 0) { d.setDate(d.getDate()+1); const w=d.getDay(); if (w!==0 && w!==6) add--; }
       return d;
     })();
-    const order = new OrderDetails({ method: m, customer, shippingAddress, items, subtotal, discount, vat, shippingFee, total, trackingCode, isTradeCustomer: isTrade, estimatedDelivery: eta });
+    const order = new OrderDetails({ method: m, paymentMethod: m, customer, shippingAddress, items, subtotal, discount, vat, shippingFee, total, trackingCode, isTradeCustomer: isTrade, estimatedDelivery: eta });
     if (userPayload && userPayload.sub) order.user_id = userPayload.sub;
     initializeOrderMetadata(order);
     await order.save();
@@ -237,7 +237,9 @@ router.get('/api/admin/orders', requireAdmin, async (req, res) => {
     const page = Math.max(1, parseInt(req.query.page || '1', 10));
     const limit = Math.max(1, Math.min(100, parseInt(req.query.limit || '20', 10)));
     const status = (req.query.status || '').trim();
+    const paymentMethod = (req.query.paymentMethod || '').trim();
     const q = status ? { status } : {};
+    if (paymentMethod) q.paymentMethod = paymentMethod;
     const total = await OrderDetails.countDocuments(q);
     const items = await OrderDetails.find(q)
       .sort({ created_at: -1 })
