@@ -16,9 +16,19 @@ function toPublicUrl(pathOrUrl) {
     return pathOrUrl;
   }
 
-  // For image paths, use S3 bucket URL
-  if (pathOrUrl.includes('uploads/') || pathOrUrl.includes('products/')) {
-    return `${S3_BUCKET_URL}${ensureLeadingSlash(pathOrUrl)}`;
+  // Image references in this project are typically stored as just a filename/key.
+  // If we see an uploads-style path, strip it down to the filename and serve from S3.
+  const normalized = String(pathOrUrl).trim().replace(/\\/g, '/');
+  const looksLikeImage = /\.(png|jpe?g|webp|gif|svg)$/i.test(normalized);
+
+  if (looksLikeImage) {
+    const filename = normalized.split('/').filter(Boolean).pop();
+    return `${S3_BUCKET_URL}/${filename}`;
+  }
+
+  if (normalized.includes('uploads/') || normalized.includes('products/')) {
+    const filename = normalized.split('/').filter(Boolean).pop();
+    return `${S3_BUCKET_URL}/${filename}`;
   }
 
   // For other paths, use default base URL
