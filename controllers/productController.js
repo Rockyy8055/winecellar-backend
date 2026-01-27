@@ -1,7 +1,7 @@
 const Product = require("../models/product");
 const Inventory = require("../models/inventory");
 const OrderDetails = require("../models/orderDetails");
-const { uploadProductImage } = require('../services/productImageUpload');
+const { uploadProductImage } = require('../services/imageUploadService');
 
 // Standard sizes for validation
 const STANDARD_SIZES = ['1.5LTR', '1LTR', '75CL', '70CL', '35CL', '20CL', '10CL', '5CL'];
@@ -188,7 +188,6 @@ function buildProductPayloadFromBody(body = {}) {
     Region: body.Region,
     taxable: coerceBoolean(body.taxable),
     brand: body.brand,
-    img: body.img || body.imageUrl,
   };
 
   const price = coerceNumber(body.price);
@@ -223,9 +222,18 @@ const addProduct = async (req, res) => {
     const basePayload = buildProductPayloadFromBody(req.body || {});
     const newProduct = new Product(basePayload);
 
-    if (req.file) {
-      const { url } = await uploadProductImage(newProduct._id, req.file);
-      newProduct.img = url;
+    // Handle image upload (either from file upload or data URL)
+    const imageInput = req.file || req.body.img || req.body.imageUrl;
+    if (imageInput) {
+      try {
+        const { url } = await uploadProductImage(newProduct._id, imageInput);
+        newProduct.img = url;
+      } catch (uploadError) {
+        return res.status(400).json({ 
+          error: 'Image upload failed', 
+          details: uploadError.message 
+        });
+      }
     }
 
     const savedProduct = await newProduct.save();
@@ -279,9 +287,23 @@ const adminUpdateProduct = async (req, res) => {
     const id = req.params.id;
     const update = buildProductPayloadFromBody(req.body || {});
 
-    if (req.file) {
-      const { url } = await uploadProductImage(id, req.file);
-      update.img = url;
+    // Get existing product to check for old image
+    const existingProduct = await Product.findById(id);
+    if (!existingProduct) return res.status(404).json({ error: 'Not found' });
+
+    // Handle image upload (either from file upload or data URL)
+    const imageInput = req.file || req.body.img || req.body.imageUrl;
+    if (imageInput) {
+      try {
+        const oldImageUrl = existingProduct.img;
+        const { url } = await uploadProductImage(id, imageInput, oldImageUrl);
+        update.img = url;
+      } catch (uploadError) {
+        return res.status(400).json({ 
+          error: 'Image upload failed', 
+          details: uploadError.message 
+        });
+      }
     }
 
     update.modified_at = new Date();

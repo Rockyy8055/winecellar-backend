@@ -1,5 +1,6 @@
 require('dotenv').config();
 const express = require("express");
+const path = require('path');
 const connectDB = require("./config/db");
 const cors = require("./config/cors");
 const cookieParser = require('cookie-parser');
@@ -22,6 +23,9 @@ app.set('trust proxy', 1);
 app.use(express.json());
 app.use(cookieParser());
 app.use(cors);
+
+// Serve static files from uploads directory
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // Handle preflight requests for all routes
 app.options('*', cors);

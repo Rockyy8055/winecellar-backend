@@ -34,9 +34,11 @@ function buildPublicUrl(key) {
 }
 
 async function uploadProductImage(productId, file) {
-  if (!bucketName) {
-    throw new Error('AWS_S3_BUCKET is not configured');
+  // Check if S3 is properly configured
+  if (!bucketName || !s3Client) {
+    throw new Error('S3 is not configured. Please set AWS_S3_BUCKET, AWS_REGION, AWS_ACCESS_KEY_ID, and AWS_SECRET_ACCESS_KEY environment variables.');
   }
+  
   if (!file || !file.buffer) {
     throw new Error('No file buffer provided for upload');
   }
