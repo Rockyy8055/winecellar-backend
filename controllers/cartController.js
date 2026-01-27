@@ -1,6 +1,7 @@
 const Product = require("../models/product");
 const CartItem = require("../models/cartItem");
 const ShoppingSession = require("../models/shoppingSession");
+const { toPublicUrl } = require('../utils/publicUrl');
 
 // Standard sizes for validation
 const STANDARD_SIZES = ['1.5LTR', '1LTR', '75CL', '70CL', '35CL', '20CL', '10CL', '5CL'];
@@ -129,7 +130,7 @@ const getCart = async (req, res) => {
         size: item.size,
         availableStock: item.size ? sizeStocks[item.size] || 0 : product.stock,
         sizeStocks,
-        image: product.img,
+        image: toPublicUrl(product.img),
         sku: product.SKU
       };
     });

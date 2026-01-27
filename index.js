@@ -2,7 +2,8 @@ require('dotenv').config();
 const express = require("express");
 const path = require('path');
 const connectDB = require("./config/db");
-const cors = require("./config/cors");
+const cors = require('cors');
+const { corsMiddleware, corsOptions } = require("./config/cors");
 const cookieParser = require('cookie-parser');
 const userRoutes = require("./routes/userRoutes");
 const productCategoryRoutes = require("./routes/productCategoryRoutes");
@@ -22,13 +23,13 @@ const PORT = process.env.PORT || 5001;
 app.set('trust proxy', 1);
 app.use(express.json());
 app.use(cookieParser());
-app.use(cors);
+app.use(corsMiddleware);
 
 // Serve static files from uploads directory
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // Handle preflight requests for all routes
-app.options('*', cors);
+app.options('*', cors(corsOptions));
 
 connectDB();
 app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(specs)); // Serve Swagger docs

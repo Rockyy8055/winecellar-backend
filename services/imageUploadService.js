@@ -1,12 +1,12 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { toPublicUrl } = require('../utils/publicUrl');
 
 // Configuration
 const UPLOAD_DIR = path.join(__dirname, '../../uploads/products');
 const MAX_FILE_SIZE_MB = Number(process.env.UPLOAD_MAX_FILE_SIZE_MB || 5);
 const MAX_FILE_SIZE_BYTES = Math.max(1, MAX_FILE_SIZE_MB) * 1024 * 1024;
-const BASE_URL = process.env.BASE_URL || 'http://localhost:5001';
 
 // Allow all image types - only validate that it starts with 'image/'
 function isImageMimeType(mimeType) {
@@ -107,17 +107,42 @@ function generateUniqueFilename(productId, originalName = '', mimeType = '') {
   return `${productId}-${timestamp}-${random}-${safeName}${ext}`;
 }
 
+function normalizeRelativePath(value = '') {
+  if (!value) return '';
+  if (/^https?:\/\//i.test(value)) {
+    try {
+      const parsed = new URL(value);
+      return parsed.pathname || '';
+    } catch (_) {
+      // fall through to string cleanup
+    }
+  }
+  const trimmed = value.replace(/\\/g, '/');
+  return trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
+}
+
+function resolveUploadPath(filename) {
+  return path.join(UPLOAD_DIR, filename);
+}
+
+function extractFilename(imageReference = '') {
+  if (!imageReference) return '';
+  try {
+    const asUrl = new URL(imageReference);
+    return path.basename(asUrl.pathname);
+  } catch (_) {
+    return path.basename(imageReference);
+  }
+}
+
 // Delete old image file
 async function deleteOldImage(imageUrl) {
   if (!imageUrl) return;
 
   try {
-    // Extract filename from URL
-    const urlParts = imageUrl.split('/');
-    const filename = urlParts[urlParts.length - 1];
-    
+    const filename = extractFilename(imageUrl);
     if (filename) {
-      const filePath = path.join(UPLOAD_DIR, filename);
+      const filePath = resolveUploadPath(filename);
       if (fs.existsSync(filePath)) {
         fs.unlinkSync(filePath);
         console.log(`Deleted old image: ${filename}`);
@@ -139,23 +164,19 @@ async function uploadImageFromDataUrl(productId, dataUrl, oldImageUrl = null) {
 
     // Generate unique filename
     const filename = generateUniqueFilename(productId, '', mimeType);
-    const filePath = path.join(UPLOAD_DIR, filename);
-
-    // Delete old image if exists
-    if (oldImageUrl) {
-      await deleteOldImage(oldImageUrl);
-    }
+    const filePath = resolveUploadPath(filename);
 
     // Write file to disk
     fs.writeFileSync(filePath, buffer);
 
-    // Return public URL
-    const publicUrl = `${BASE_URL}/uploads/products/${filename}`;
+    const relativePath = `/uploads/products/${filename}`;
+    const publicUrl = toPublicUrl(relativePath);
 
     return {
       filename,
       path: filePath,
       url: publicUrl,
+      relativePath,
       size: buffer.length,
       mimeType
     };
@@ -179,23 +200,19 @@ async function uploadImageFromFile(productId, file, oldImageUrl = null) {
 
     // Generate unique filename
     const filename = generateUniqueFilename(productId, file.originalname, mimeType);
-    const filePath = path.join(UPLOAD_DIR, filename);
-
-    // Delete old image if exists
-    if (oldImageUrl) {
-      await deleteOldImage(oldImageUrl);
-    }
+    const filePath = resolveUploadPath(filename);
 
     // Write file to disk
     fs.writeFileSync(filePath, file.buffer);
 
-    // Return public URL
-    const publicUrl = `${BASE_URL}/uploads/products/${filename}`;
+    const relativePath = `/uploads/products/${filename}`;
+    const publicUrl = toPublicUrl(relativePath);
 
     return {
       filename,
       path: filePath,
       url: publicUrl,
+      relativePath,
       size: file.buffer.length,
       mimeType
     };
@@ -212,8 +229,17 @@ async function uploadProductImage(productId, imageInput, oldImageUrl = null) {
   }
 
   // Handle data URL
-  if (typeof imageInput === 'string' && imageInput.startsWith('data:')) {
-    return await uploadImageFromDataUrl(productId, imageInput, oldImageUrl);
+  if (typeof imageInput === 'string') {
+    if (imageInput.startsWith('data:')) {
+      return await uploadImageFromDataUrl(productId, imageInput, oldImageUrl);
+    }
+
+    const relativePath = normalizeRelativePath(imageInput);
+    const publicUrl = toPublicUrl(relativePath || imageInput);
+    return {
+      url: publicUrl,
+      relativePath: relativePath || undefined,
+    };
   }
 
   // Handle file object (from multer)
@@ -221,12 +247,7 @@ async function uploadProductImage(productId, imageInput, oldImageUrl = null) {
     return await uploadImageFromFile(productId, imageInput, oldImageUrl);
   }
 
-  // Handle string URL (no upload needed)
-  if (typeof imageInput === 'string' && imageInput.startsWith('http')) {
-    return { url: imageInput };
-  }
-
-  throw new Error('Invalid image input. Expected data URL string, file object, or image URL.');
+  throw new Error('Invalid image input. Expected data URL string, file object, or image path.');
 }
 
 module.exports = {
@@ -235,5 +256,7 @@ module.exports = {
   uploadImageFromFile,
   deleteOldImage,
   parseDataUrl,
-  validateImageFile
+  validateImageFile,
+  extractFilename,
+  resolveUploadPath,
 };

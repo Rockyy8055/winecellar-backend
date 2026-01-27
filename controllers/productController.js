@@ -1,7 +1,8 @@
 const Product = require("../models/product");
 const Inventory = require("../models/inventory");
 const OrderDetails = require("../models/orderDetails");
-const { uploadProductImage } = require('../services/imageUploadService');
+const { uploadProductImage, deleteOldImage } = require('../services/imageUploadService');
+const { toPublicUrl } = require('../utils/publicUrl');
 
 // Standard sizes for validation
 const STANDARD_SIZES = ['1.5LTR', '1LTR', '75CL', '70CL', '35CL', '20CL', '10CL', '5CL'];
@@ -13,6 +14,56 @@ function normalizeSizeStocks(sizeStocks = {}) {
     normalized[size] = Math.max(0, Math.floor(Number(value) || 0));
   });
   return normalized;
+}
+
+function formatProductResponse(doc) {
+  if (!doc) {
+    return null;
+  }
+
+  const base = typeof doc.toObject === 'function' ? doc.toObject() : { ...doc };
+  const productIdCandidate = base._id || base.ProductId || base.id;
+  const productId = productIdCandidate ? String(productIdCandidate) : undefined;
+  const sizeStocksSource = doc.sizeStocks?.toObject?.() || base.sizeStocks || {};
+  const sizeStocks = normalizeSizeStocks(sizeStocksSource);
+
+  const rawImage = base.img || base.imageUrl || base.image || '';
+  const publicImage = rawImage ? toPublicUrl(rawImage) : '';
+
+  return {
+    ...base,
+    ProductId: productId || base.ProductId,
+    img: publicImage,
+    imageUrl: publicImage,
+    sizeStocks,
+  };
+}
+
+function computeTotalStock(sizeStocks = {}) {
+  return Object.values(normalizeSizeStocks(sizeStocks)).reduce((sum, value) => sum + value, 0);
+}
+
+function formatProductForResponse(doc) {
+  const formatted = formatProductResponse(doc);
+  if (!formatted) {
+    return null;
+  }
+
+  const totalStock = computeTotalStock(formatted.sizeStocks);
+  const productId = formatted.ProductId || (formatted._id && String(formatted._id)) || formatted.id;
+
+  return {
+    ...formatted,
+    ProductId: productId,
+    discount: formatted.discount ?? 'No discount',
+    size: formatted.size ?? 'N/A',
+    vendor: formatted.vendor ?? 'Unknown Vendor',
+    Country: formatted.Country ?? 'Unknown Country',
+    Region: formatted.Region ?? 'Unknown Region',
+    brand: formatted.brand ?? 'Unknown Brand',
+    stock: Number.isFinite(Number(formatted.stock)) ? Number(formatted.stock) : totalStock,
+    sizeStocks: formatted.sizeStocks,
+  };
 }
 
 function validateSizeStocks(sizeStocks = {}) {
@@ -106,38 +157,7 @@ const getAllProducts = async (req, res) => {
   try {
     const products = await Product.find();
 
-    // Format response as per the provided JSON structure
-    const formattedProducts = products.map((product) => {
-      const imageUrl = product.img || '';
-      const sizeStocks = normalizeSizeStocks(product.sizeStocks?.toObject?.() || product.sizeStocks || {});
-      return {
-        ProductId: product._id,
-        name: product.name,
-        price: product.price,
-        desc: product.desc || "",
-        description: product.description || product.desc || "",
-        category: product.category,
-        subCategory: product.subCategory,
-        discount: product.discount || "No discount", // Default to "No discount" if not available
-        size: product.size || "N/A", // Default size to "N/A" if not provided
-        SKU: product.SKU,
-        tags: product.tags || [], // Default to empty array if no tags
-        created_at: product.created_at,
-        modified_at: product.modified_at,
-        deleted_at: product.deleted_at,
-        vendor: product.vendor || "Unknown Vendor",
-        Country: product.Country || "Unknown Country",
-        Region: product.Region || "Unknown Region",
-        taxable: product.taxable,
-        brand: product.brand || "Unknown Brand",
-        img: imageUrl,
-        imageUrl,
-        stock: product.stock,
-        sizeStocks,
-      };
-    });
-
-    // Return formatted products as JSON
+    const formattedProducts = products.map(formatProductForResponse).filter(Boolean);
     res.status(200).json(formattedProducts);
   } catch (error) {
     res.status(500).json({ message: "Error fetching products", error });
@@ -234,9 +254,10 @@ const addProduct = async (req, res) => {
     if (imageInput) {
       try {
         console.log('Processing image upload...');
-        const { url } = await uploadProductImage(newProduct._id, imageInput);
-        newProduct.img = url;
-        console.log('Image uploaded successfully:', url);
+        const uploaded = await uploadProductImage(newProduct._id, imageInput);
+        const storedPath = uploaded.relativePath || uploaded.url;
+        newProduct.img = storedPath;
+        console.log('Image uploaded successfully:', uploaded.url);
       } catch (uploadError) {
         console.error('Image upload failed:', uploadError.message);
         return res.status(400).json({ 
@@ -248,7 +269,7 @@ const addProduct = async (req, res) => {
 
     const savedProduct = await newProduct.save();
     console.log('Product saved successfully:', savedProduct._id);
-    res.status(201).json(savedProduct);
+    res.status(201).json(formatProductForResponse(savedProduct));
   } catch (error) {
     console.error('Error adding product:', error.message);
     res.status(500).json({ message: "Error adding product", error: error.message });
@@ -277,17 +298,9 @@ const adminListProducts = async (req, res) => {
     const filter = q ? { name: { $regex: q, $options: 'i' } } : {};
     const total = await Product.countDocuments(filter);
     const items = await Product.find(filter).sort({ modified_at: -1 }).skip((page-1)*limit).limit(limit);
-    
-    // Format items to include sizeStocks
-    const formattedItems = items.map(item => {
-      const itemObj = item.toObject();
-      const sizeStocks = normalizeSizeStocks(item.sizeStocks?.toObject?.() || item.sizeStocks || {});
-      return {
-        ...itemObj,
-        sizeStocks
-      };
-    });
-    
+
+    const formattedItems = items.map(formatProductForResponse).filter(Boolean);
+
     res.json({ items: formattedItems, total, page, pages: Math.ceil(total/limit) });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -310,16 +323,19 @@ const adminUpdateProduct = async (req, res) => {
     // Get existing product to check for old image
     const existingProduct = await Product.findById(id);
     if (!existingProduct) return res.status(404).json({ error: 'Not found' });
+    const oldImageUrl = existingProduct.img;
+    let newImagePath = null;
 
     // Handle image upload (either from file upload or data URL)
     const imageInput = req.file || req.body.img || req.body.imageUrl;
     if (imageInput) {
       try {
         console.log('Processing image update...');
-        const oldImageUrl = existingProduct.img;
-        const { url } = await uploadProductImage(id, imageInput, oldImageUrl);
-        update.img = url;
-        console.log('Image updated successfully:', url);
+        const uploaded = await uploadProductImage(id, imageInput);
+        const storedPath = uploaded.relativePath || uploaded.url;
+        update.img = storedPath;
+        newImagePath = storedPath;
+        console.log('Image updated successfully:', uploaded.url);
       } catch (uploadError) {
         console.error('Image update failed:', uploadError.message);
         return res.status(400).json({ 
@@ -337,9 +353,13 @@ const adminUpdateProduct = async (req, res) => {
       { new: true, runValidators: true, context: 'query' }
     );
     if (!doc) return res.status(404).json({ error: 'Not found' });
-    
+
+    if (oldImageUrl && newImagePath && newImagePath !== oldImageUrl) {
+      await deleteOldImage(oldImageUrl);
+    }
+
     console.log('Product updated successfully:', id);
-    res.json(doc);
+    res.json(formatProductForResponse(doc));
   } catch (e) {
     console.error('Error updating product:', e.message);
     if (e?.name === 'CastError') {
@@ -386,11 +406,7 @@ const adminUpdateProductStock = async (req, res) => {
     product.modified_at = new Date();
     await product.save();
     
-    // Return formatted response with sizeStocks
-    const response = product.toObject();
-    response.sizeStocks = normalizeSizeStocks(product.sizeStocks?.toObject?.() || {});
-    
-    res.json(response);
+    res.json(formatProductForResponse(product));
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -456,10 +472,7 @@ const adminBatchUpdateSizeStocks = async (req, res) => {
         product.modified_at = new Date();
         await product.save();
 
-        const response = product.toObject();
-        response.sizeStocks = normalizeSizeStocks(product.sizeStocks?.toObject?.() || {});
-        
-        results.push(response);
+        results.push(formatProductForResponse(product));
       } catch (error) {
         errors.push({ id: update.id, error: error.message });
       }
@@ -572,8 +585,8 @@ const getBestSellers = async (req, res) => {
         price: Number(p.price ?? r.lastPrice ?? 0),
         desc: p.desc || '',
         description: p.description || p.desc || '',
-        img: p.img || p.image || p.imageUrl || '',
-        imageUrl: p.imageUrl || p.img || '',
+        img: toPublicUrl(p.img || p.image || p.imageUrl || ''),
+        imageUrl: toPublicUrl(p.imageUrl || p.img || ''),
         category: p.category || [],
         stock: Number(p.stock ?? 0),
         sizeStocks,

@@ -4,6 +4,7 @@ const jwt = require('jsonwebtoken');
 const cookieParser = require('cookie-parser');
 const User = require('../models/user');
 const { requireAdmin } = require('../config/requireAdmin');
+const { buildCookieOptions } = require('../config/cookieOptions');
 
 const router = express.Router();
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret';
@@ -12,25 +13,20 @@ const COOKIE_MAX_AGE = 7 * 24 * 60 * 60 * 1000;
 
 router.use(cookieParser());
 
-const isProduction = process.env.NODE_ENV === 'production';
-const baseCookieOptions = {
-  httpOnly: true,
-  secure: isProduction,
-  sameSite: isProduction ? 'none' : 'lax',
-  path: '/',
-};
-
 function setAuthCookie(res, token) {
   res.cookie(COOKIE_NAME, token, {
-    ...baseCookieOptions,
-    maxAge: COOKIE_MAX_AGE,
+    ...buildCookieOptions({
+      maxAge: COOKIE_MAX_AGE,
+    }),
   });
 }
 
 function clearAuthCookie(res) {
   res.cookie(COOKIE_NAME, '', {
-    ...baseCookieOptions,
-    maxAge: 0,
+    ...buildCookieOptions({
+      maxAge: 0,
+      expires: new Date(0),
+    }),
   });
 }
 
@@ -43,7 +39,7 @@ function normalizeEmail(email) {
 }
 
 function sendAuthRequired(res) {
-  return res.status(401).json({ message: 'Unauthorized' });
+  return res.status(401).json({ message: 'Not authenticated' });
 }
 
 function requireAuth(req, res, next) {
@@ -136,9 +132,16 @@ router.post('/api/auth/login', async (req, res) => {
 });
 
 // GET /api/auth/me
-router.get('/api/auth/me', requireAuth, async (req, res) => {
+router.get('/api/auth/me', optionalAuth, async (req, res) => {
+  if (!req.userId) {
+    return res.status(200).json({ message: 'Not authenticated.', user: null });
+  }
+
   const user = await User.findById(req.userId);
-  if (!user) return sendAuthRequired(res);
+  if (!user) {
+    return res.status(200).json({ message: 'Not authenticated.', user: null });
+  }
+
   return res.status(200).json({ message: 'Authenticated.', user: toPublicUser(user) });
 });
 
