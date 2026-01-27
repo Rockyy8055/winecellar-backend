@@ -1,5 +1,48 @@
 const mongoose = require("mongoose");
 
+const billingDetailsSchema = new mongoose.Schema(
+  {
+    firstName: { type: String },
+    lastName: { type: String },
+    email: { type: String },
+    phone: { type: String },
+    address: { type: String },
+    postcode: { type: String },
+  },
+  { _id: false, strict: false }
+);
+
+const shippingAddressSchema = new mongoose.Schema(
+  {
+    line1: { type: String },
+    line2: { type: String },
+    city: { type: String },
+    state: { type: String },
+    postcode: { type: String },
+    country: { type: String },
+    phone: { type: String },
+    storeId: { type: String },
+    storeName: { type: String },
+    addressLine1: { type: String },
+    addressLine2: { type: String },
+  },
+  { _id: false, strict: false }
+);
+
+const pickupStoreSchema = new mongoose.Schema(
+  {
+    storeId: { type: String },
+    storeName: { type: String },
+    addressLine1: { type: String },
+    addressLine2: { type: String },
+    city: { type: String },
+    postcode: { type: String },
+    country: { type: String },
+    phone: { type: String },
+  },
+  { _id: false, strict: false }
+);
+
 const orderDetailsSchema = new mongoose.Schema({
   user_id: {
     type: mongoose.Schema.Types.ObjectId,
@@ -20,6 +63,8 @@ const orderDetailsSchema = new mongoose.Schema({
     },
   ],
   method: { type: String },
+  paymentMethod: { type: String },
+  billingDetails: billingDetailsSchema,
   subtotal: { type: Number, default: 0 },
   discount: { type: Number, default: 0 },
   vat: { type: Number, default: 0 },
@@ -35,10 +80,8 @@ const orderDetailsSchema = new mongoose.Schema({
     ref: "UserPayment",
     required: false,
   },
-  shippingAddress: {
-    type: Object,
-    required: false,
-  },
+  shippingAddress: shippingAddressSchema,
+  pickupStore: pickupStoreSchema,
   trackingCode: {
     type: String,
     index: true,

@@ -7,6 +7,7 @@ const { sendMail } = require('../services/emailService');
 const OrderDetails = require('../models/orderDetails');
 
 const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
+const PICK_AND_PAY_METHODS = new Set(['cod', 'pick_and_pay', 'pickup']);
 
 function computeTotals(items, opts = {}) {
   const { isTradeCustomer = false, shippingOverride } = opts;
@@ -23,18 +24,121 @@ function computeTotals(items, opts = {}) {
   return { subtotal, discount, vat, shippingFee, total, isTradeCustomer: !!isTradeCustomer };
 }
 
+function sanitizeBillingDetails(details) {
+  if (!details || typeof details !== 'object') return undefined;
+  const allowedKeys = ['firstName', 'lastName', 'email', 'phone', 'address', 'postcode'];
+  const sanitized = allowedKeys.reduce((acc, key) => {
+    if (details[key] != null && details[key] !== '') acc[key] = details[key];
+    return acc;
+  }, {});
+  return Object.keys(sanitized).length ? sanitized : undefined;
+}
+
+function normalizePickupStore(store) {
+  if (!store || typeof store !== 'object') return undefined;
+  const normalized = {};
+  const storeId = store.storeId || store.id || store.store_id || store._id;
+  const storeName = store.storeName || store.name || store.store_name;
+  const addressLine1 = store.addressLine1 || store.addressLine || store.address1 || store.address || store.line1;
+  const addressLine2 = store.addressLine2 || store.addressLineTwo || store.address2 || store.line2;
+  const city = store.city || store.town;
+  const state = store.state || store.region;
+  const postcode = store.postcode || store.postalCode || store.zip || store.zipcode;
+  const country = store.country;
+  const phone = store.phone || store.telephone || store.contactNumber;
+
+  if (storeId != null) normalized.storeId = String(storeId);
+  if (storeName != null) normalized.storeName = storeName;
+  if (addressLine1 != null) normalized.addressLine1 = addressLine1;
+  if (addressLine2 != null) normalized.addressLine2 = addressLine2;
+  if (city != null) normalized.city = city;
+  if (state != null) normalized.state = state;
+  if (postcode != null) normalized.postcode = postcode;
+  if (country != null) normalized.country = country;
+  if (phone != null) normalized.phone = phone;
+
+  return Object.keys(normalized).length ? normalized : undefined;
+}
+
+function buildPickAndPayShippingAddress(pickupStore, fallbackAddress) {
+  const baseAddress = fallbackAddress && typeof fallbackAddress === 'object' ? { ...fallbackAddress } : {};
+  const storeDetails = normalizePickupStore(pickupStore);
+  if (storeDetails) {
+    if (storeDetails.storeId) baseAddress.storeId = storeDetails.storeId;
+    if (storeDetails.storeName) baseAddress.storeName = storeDetails.storeName;
+    if (storeDetails.addressLine1) {
+      baseAddress.addressLine1 = storeDetails.addressLine1;
+      baseAddress.line1 = storeDetails.addressLine1;
+    }
+    if (storeDetails.addressLine2) {
+      baseAddress.addressLine2 = storeDetails.addressLine2;
+      baseAddress.line2 = storeDetails.addressLine2;
+    }
+    if (storeDetails.city) baseAddress.city = storeDetails.city;
+    if (storeDetails.state) baseAddress.state = storeDetails.state;
+    if (storeDetails.postcode) baseAddress.postcode = storeDetails.postcode;
+    if (storeDetails.country) baseAddress.country = storeDetails.country;
+    if (storeDetails.phone) baseAddress.phone = storeDetails.phone;
+  }
+  return Object.keys(baseAddress).length ? baseAddress : undefined;
+}
+
+function mergeShippingWithPickupStore(shippingAddress, pickupStore) {
+  if (!pickupStore || typeof pickupStore !== 'object') {
+    return shippingAddress && typeof shippingAddress === 'object' ? { ...shippingAddress } : shippingAddress || null;
+  }
+  const merged = shippingAddress && typeof shippingAddress === 'object' ? { ...shippingAddress } : {};
+  const fields = ['storeId', 'storeName', 'addressLine1', 'addressLine2', 'city', 'state', 'postcode', 'country', 'phone'];
+  fields.forEach((key) => {
+    if (pickupStore[key] != null && merged[key] == null) {
+      merged[key] = pickupStore[key];
+    }
+  });
+  if (pickupStore.addressLine1 != null && merged.line1 == null) merged.line1 = pickupStore.addressLine1;
+  if (pickupStore.addressLine2 != null && merged.line2 == null) merged.line2 = pickupStore.addressLine2;
+  return Object.keys(merged).length ? merged : null;
+}
+
+function serializeOrderForAdmin(doc) {
+  if (!doc) return null;
+  const order = typeof doc.toObject === 'function' ? doc.toObject({ virtuals: true }) : { ...doc };
+  const pickupStore = order.pickupStore || null;
+  const shippingAddress = mergeShippingWithPickupStore(order.shippingAddress, pickupStore);
+  return {
+    ...order,
+    paymentMethod: order.paymentMethod || order.method || null,
+    billingDetails: order.billingDetails || null,
+    pickupStore,
+    shippingAddress,
+  };
+}
+
 // Create order (simple)
 const { requireAuth, optionalAuth } = require('./userAuth');
 
 router.post('/api/orders/create', requireAuth, async (req, res) => {
   try {
-    const { customer, shippingAddress, items = [], trackingCode, isTradeCustomer = false, shippingOverride } = req.body || {};
+    const {
+      customer,
+      shippingAddress,
+      billingDetails: billingDetailsRaw,
+      pickupStore: pickupStoreRaw,
+      items = [],
+      trackingCode,
+      isTradeCustomer = false,
+      shippingOverride,
+    } = req.body || {};
     if (!customer || !customer.email) {
       return res.status(400).json({ error: 'customer.email is required' });
     }
     // Detect Pick & Pay
     const m = String((req.body && req.body.method) || '').toLowerCase();
-    const isPickAndPay = ['cod','pick_and_pay','pickup'].includes(m);
+    const isPickAndPay = PICK_AND_PAY_METHODS.has(m);
+    const billingDetails = sanitizeBillingDetails(billingDetailsRaw);
+    const pickupStore = normalizePickupStore(pickupStoreRaw);
+    const shippingAddressPayload = isPickAndPay
+      ? buildPickAndPayShippingAddress(pickupStoreRaw, shippingAddress) || shippingAddress || null
+      : shippingAddress;
     let { subtotal, discount, vat, shippingFee, total, isTradeCustomer: isTrade } = computeTotals(items, { isTradeCustomer, shippingOverride });
     if (isPickAndPay) {
       shippingFee = 0;
@@ -47,7 +151,23 @@ router.post('/api/orders/create', requireAuth, async (req, res) => {
       let add = 2; while (add > 0) { d.setDate(d.getDate()+1); const w=d.getDay(); if (w!==0 && w!==6) add--; }
       return d;
     })();
-    const order = new OrderDetails({ method: m, paymentMethod: m, customer, shippingAddress, items, subtotal, discount, vat, shippingFee, total, trackingCode, isTradeCustomer: isTrade, estimatedDelivery: eta });
+    const order = new OrderDetails({
+      method: m,
+      paymentMethod: m,
+      customer,
+      billingDetails,
+      shippingAddress: shippingAddressPayload,
+      pickupStore,
+      items,
+      subtotal,
+      discount,
+      vat,
+      shippingFee,
+      total,
+      trackingCode,
+      isTradeCustomer: isTrade,
+      estimatedDelivery: eta,
+    });
     if (userPayload && userPayload.sub) order.user_id = userPayload.sub;
     initializeOrderMetadata(order);
     await order.save();
@@ -237,15 +357,16 @@ router.get('/api/admin/orders', requireAdmin, async (req, res) => {
     const page = Math.max(1, parseInt(req.query.page || '1', 10));
     const limit = Math.max(1, Math.min(100, parseInt(req.query.limit || '20', 10)));
     const status = (req.query.status || '').trim();
-    const paymentMethod = (req.query.paymentMethod || '').trim();
+    const paymentMethodRaw = (req.query.paymentMethod || '').trim();
     const q = status ? { status } : {};
-    if (paymentMethod) q.paymentMethod = paymentMethod;
+    if (paymentMethodRaw) q.paymentMethod = paymentMethodRaw.toLowerCase();
     const total = await OrderDetails.countDocuments(q);
     const items = await OrderDetails.find(q)
       .sort({ created_at: -1 })
       .skip((page - 1) * limit)
-      .limit(limit);
-    res.json({ items, total, page, pages: Math.ceil(total / limit) });
+      .limit(limit)
+      .lean();
+    res.json({ items: items.map(serializeOrderForAdmin), total, page, pages: Math.ceil(total / limit) });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -254,9 +375,9 @@ router.get('/api/admin/orders', requireAdmin, async (req, res) => {
 // Admin: get one order with all details
 router.get('/api/admin/orders/:id', requireAdmin, async (req, res) => {
   try {
-    const order = await OrderDetails.findById(req.params.id);
+    const order = await OrderDetails.findById(req.params.id).lean();
     if (!order) return res.status(404).json({ error: 'Not found' });
-    res.json(order);
+    res.json(serializeOrderForAdmin(order));
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
