@@ -13,6 +13,7 @@ const webUserRoutes = require('./routes/webUserRoutes');
 const orderRoutes = require('./routes/orderRoutes');
 const adminAuthRoutes = require('./routes/adminAuth');
 const upsRoutes = require('./routes/upsRoutes');
+const cartRoutes = require('./routes/cartRoutes');
 
 const app = express();
 const PORT = process.env.PORT || 5001;
@@ -44,6 +45,7 @@ app.use(webUserRoutes);
 app.use(paymentRoutes);
 app.use(orderRoutes);
 app.use(upsRoutes);
+app.use(cartRoutes);
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
 });

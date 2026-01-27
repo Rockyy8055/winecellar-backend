@@ -15,6 +15,11 @@ const cartItemSchema = new mongoose.Schema({
     type: Number,
     required: true,
   },
+  size: {
+    type: String,
+    required: false,
+    enum: ['1.5LTR', '1LTR', '75CL', '70CL', '35CL', '20CL', '10CL', '5CL'],
+  },
   created_at: {
     type: Date,
     default: Date.now,

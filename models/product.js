@@ -83,8 +83,31 @@ const productSchema = new mongoose.Schema({
     type: Number,
     required: true,
   },
+  sizeStocks: {
+    type: Map,
+    of: Number,
+    default: new Map([
+      ['1.5LTR', 0],
+      ['1LTR', 0],
+      ['75CL', 0],
+      ['70CL', 0],
+      ['35CL', 0],
+      ['20CL', 0],
+      ['10CL', 0],
+      ['5CL', 0]
+    ])
+  },
 });
 
+// Pre-save middleware to sync total stock with sizeStocks
+productSchema.pre('save', function(next) {
+  if (this.isModified('sizeStocks')) {
+    // Calculate total stock from sizeStocks
+    const totalStock = Array.from(this.sizeStocks.values()).reduce((sum, stock) => sum + Math.max(0, stock), 0);
+    this.stock = totalStock;
+  }
+  next();
+});
 
 const Product = mongoose.model("Product", productSchema);
 

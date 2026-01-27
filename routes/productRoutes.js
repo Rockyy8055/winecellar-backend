@@ -10,6 +10,7 @@ const {
   adminUpdateProductStock,
   getBestSellers,
   adminDeleteProduct,
+  adminBatchUpdateSizeStocks,
 } = require("../controllers/productController");
 const { requireAdmin } = require('../config/requireAdmin');
 const { adminProductImageUpload } = require('../middleware/upload');
@@ -55,5 +56,11 @@ router.delete("/api/product/delete-all", requireAdmin, deleteAllProducts);
  * Admin: delete one product
  */
 router.delete('/api/admin/products/:id', requireAdmin, adminDeleteProduct);
+
+/**
+ * Admin: batch update size stocks
+ * Body: { updates: [{ id: "productId", sizeStocks: { "1.5LTR": 10, "1LTR": 5, ... } }] }
+ */
+router.patch('/api/admin/products/batch-size-stocks', requireAdmin, adminBatchUpdateSizeStocks);
 
 module.exports = router;
