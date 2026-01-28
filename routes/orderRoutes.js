@@ -116,7 +116,7 @@ function serializeOrderForAdmin(doc) {
 // Create order (simple)
 const { requireAuth, optionalAuth } = require('./userAuth');
 
-router.post('/api/orders/create', requireAuth, async (req, res) => {
+router.post('/api/orders/create', optionalAuth, async (req, res) => {
   try {
     const {
       customer,
