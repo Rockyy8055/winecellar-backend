@@ -1,5 +1,50 @@
 const mongoose = require("mongoose");
 
+const SAFE_SIZE_KEYS = ['1.5LTR', '1LTR', '75CL', '70CL', '35CL', '20CL', '10CL', '5CL'];
+
+function createEmptySizeStocks() {
+  return SAFE_SIZE_KEYS.reduce((acc, key) => {
+    acc[key] = 0;
+    return acc;
+  }, {});
+}
+
+function normalizeSizeStocksForModel(input = {}) {
+  if (input && typeof input.toObject === 'function') {
+    input = input.toObject();
+  }
+
+  const normalized = {};
+
+  if (input && typeof input === 'object') {
+    Object.entries(input).forEach(([rawKey, value]) => {
+      const key = String(rawKey || '')
+        .toUpperCase()
+        .replace(/\s+/g, '');
+      if (!SAFE_SIZE_KEYS.includes(key)) {
+        return;
+      }
+      const num = Number(value);
+      normalized[key] = Number.isFinite(num) && num >= 0 ? Math.floor(num) : 0;
+    });
+  }
+
+  SAFE_SIZE_KEYS.forEach((key) => {
+    if (!Object.prototype.hasOwnProperty.call(normalized, key)) {
+      normalized[key] = 0;
+    }
+  });
+
+  return normalized;
+}
+
+function sumSizeStocks(sizeStocks = {}) {
+  return SAFE_SIZE_KEYS.reduce((total, key) => {
+    const num = Number(sizeStocks?.[key]);
+    return total + (Number.isFinite(num) && num > 0 ? Math.floor(num) : 0);
+  }, 0);
+}
+
 const productSchema = new mongoose.Schema({
   name: {
     type: String,
@@ -85,27 +130,17 @@ const productSchema = new mongoose.Schema({
     default: 0,
   },
   sizeStocks: {
-    type: Map,
-    of: Number,
-    default: new Map([
-      ['1.5LTR', 0],
-      ['1LTR', 0],
-      ['75CL', 0],
-      ['70CL', 0],
-      ['35CL', 0],
-      ['20CL', 0],
-      ['10CL', 0],
-      ['5CL', 0]
-    ])
+    type: mongoose.Schema.Types.Mixed,
+    default: () => createEmptySizeStocks(),
   },
 });
 
-// Pre-save middleware to sync total stock with sizeStocks
+// Pre-save middleware to normalize sizeStocks and sync total stock
 productSchema.pre('save', function(next) {
-  if (this.isModified('sizeStocks')) {
-    // Calculate total stock from sizeStocks
-    const totalStock = Array.from(this.sizeStocks.values()).reduce((sum, stock) => sum + Math.max(0, stock), 0);
-    this.stock = totalStock;
+  if (this.isModified('sizeStocks') || this.isNew) {
+    const normalized = normalizeSizeStocksForModel(this.sizeStocks || {});
+    this.sizeStocks = normalized;
+    this.stock = sumSizeStocks(normalized);
   }
   next();
 });
