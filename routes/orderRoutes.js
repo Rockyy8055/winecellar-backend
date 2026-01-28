@@ -10,11 +10,13 @@ const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
 const VALID_PAYMENT_METHODS = new Map([
   ['debit card', 'Debit Card'],
   ['credit card', 'Credit Card'],
+  ['card', 'Credit Card'],
   ['paypal', 'PayPal'],
   ['pick & pay', 'Pick & Pay'],
   ['pick and pay', 'Pick & Pay'],
   ['pick_pay', 'Pick & Pay'],
-  ['pickandpay', 'Pick & Pay']
+  ['pickandpay', 'Pick & Pay'],
+  ['cod', 'Pick & Pay']
 ]);
 
 const generateOrderId = () => {
@@ -33,7 +35,7 @@ function normalizeOrderItems(orderItems) {
   if (!Array.isArray(orderItems)) return [];
   return orderItems.reduce((acc, item) => {
     if (!item || typeof item !== 'object') return acc;
-    const name = String(item.name || item.title || '').trim();
+    const name = String(item.name || item.title || item.ProductName || item.productName || '').trim();
     const qty = Number(item.qty ?? item.quantity ?? 0);
     const price = Number(item.price ?? item.amount ?? 0);
     if (!name || !Number.isFinite(qty) || qty <= 0 || !Number.isFinite(price) || price < 0) {
@@ -42,6 +44,28 @@ function normalizeOrderItems(orderItems) {
     acc.push({ name, qty, price });
     return acc;
   }, []);
+}
+
+function extractOrderPayload(body = {}) {
+  const customerEmail = body.customerEmail || body.customer?.email || body.billingDetails?.email;
+  const customerName = body.customerName || body.customer?.name || [body.billingDetails?.firstName, body.billingDetails?.lastName].filter(Boolean).join(' ').trim();
+  const paymentMethod = body.paymentMethod || body.method || body.payment_method || body.paymentType;
+  const orderItems = body.orderItems || body.items || [];
+  const subtotalRaw = body.subtotal ?? body.subtotalAmount ?? body.sub_total;
+  const taxRaw = body.tax ?? body.vat ?? body.taxAmount;
+  const totalRaw = body.total ?? body.totalAmount ?? body.amountPaid;
+  const shopLocation = body.shopLocation || body.pickupStore?.storeName || body.storeLocation;
+
+  return {
+    customerEmail,
+    customerName,
+    paymentMethod,
+    orderItems,
+    subtotal: subtotalRaw,
+    tax: taxRaw,
+    total: totalRaw,
+    shopLocation,
+  };
 }
 
 function buildOrderEmail({ orderId, customerName, paymentMethod, orderItems, subtotal, tax, total, shopLocation }) {
@@ -212,6 +236,7 @@ const { requireAuth, optionalAuth } = require('./userAuth');
 
 router.post('/api/orders/create', optionalAuth, async (req, res) => {
   try {
+    const extracted = extractOrderPayload(req.body);
     const {
       customerEmail,
       customerName,
@@ -221,7 +246,7 @@ router.post('/api/orders/create', optionalAuth, async (req, res) => {
       tax,
       total,
       shopLocation,
-    } = req.body || {};
+    } = extracted;
 
     if (!customerEmail || typeof customerEmail !== 'string') {
       return res.status(400).json({ error: 'customerEmail is required' });
@@ -240,12 +265,13 @@ router.post('/api/orders/create', optionalAuth, async (req, res) => {
       return res.status(400).json({ error: 'orderItems must include at least one item with qty and price' });
     }
 
+    const fallbackSubtotal = normalizedItems.reduce((sum, item) => sum + (item.price * item.qty), 0);
     const subtotalValue = Number(subtotal);
+    const safeSubtotal = Number.isFinite(subtotalValue) && subtotalValue >= 0 ? subtotalValue : round2(fallbackSubtotal);
     const taxValue = Number(tax);
+    const safeTax = Number.isFinite(taxValue) && taxValue >= 0 ? taxValue : 0;
     const totalValue = Number(total);
-    if (![subtotalValue, taxValue, totalValue].every(n => Number.isFinite(n) && n >= 0)) {
-      return res.status(400).json({ error: 'subtotal, tax, total must be non-negative numbers' });
-    }
+    const safeTotal = Number.isFinite(totalValue) && totalValue >= 0 ? totalValue : round2(safeSubtotal + safeTax);
 
     const orderId = generateOrderId();
     const orderDoc = new OrderDetails({
@@ -257,9 +283,9 @@ router.post('/api/orders/create', optionalAuth, async (req, res) => {
         email: customerEmail,
       },
       items: normalizedItems,
-      subtotal: subtotalValue,
-      vat: taxValue,
-      total: totalValue,
+      subtotal: safeSubtotal,
+      vat: safeTax,
+      total: safeTotal,
       pickupStore: shopLocation ? { storeName: shopLocation } : undefined,
       shippingFee: 0,
     });
@@ -272,9 +298,9 @@ router.post('/api/orders/create', optionalAuth, async (req, res) => {
       customerName,
       paymentMethod: normalizedPaymentMethod,
       orderItems: normalizedItems,
-      subtotal: subtotalValue,
-      tax: taxValue,
-      total: totalValue,
+      subtotal: safeSubtotal,
+      tax: safeTax,
+      total: safeTotal,
       shopLocation,
     });
 
@@ -285,7 +311,7 @@ router.post('/api/orders/create', optionalAuth, async (req, res) => {
       return res.status(502).json({ success: false, orderId, error: 'EMAIL_FAILED', message: 'Order saved but confirmation email could not be sent. Please contact support if you do not receive an email.' });
     }
 
-    return res.json({ success: true, orderId });
+    return res.json({ success: true, orderId, trackingCode: orderId });
   } catch (err) {
     console.error('order creation failed:', err);
     return res.status(500).json({ error: 'INTERNAL_ERROR' });

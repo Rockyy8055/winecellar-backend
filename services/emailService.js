@@ -1,29 +1,57 @@
-const { Resend } = require('resend');
+const nodemailer = require('nodemailer');
 
 function envTrim(key) {
   const v = process.env[key];
   return typeof v === 'string' ? v.trim() : v;
 }
 
-const resendApiKey = envTrim('RESEND_API_KEY');
-const emailFrom = envTrim('EMAIL_FROM');
-
-const resendClient = resendApiKey ? new Resend(resendApiKey) : null;
-
-async function sendMail(to, subject, text, html) {
-  if (!resendClient) {
-    throw new Error('Resend client is not configured. Set RESEND_API_KEY.');
+function buildTransport() {
+  const user = envTrim('EMAIL_USER') || envTrim('SMTP_USER') || envTrim('GMAIL_USER') || envTrim('EMAIL');
+  const pass = envTrim('EMAIL_PASS') || envTrim('SMTP_PASS') || envTrim('GMAIL_APP_PASS') || envTrim('EMAIL_PASSWORD');
+  if (!user || !pass) {
+    console.warn('Email transport missing credentials. Set EMAIL_USER/EMAIL_PASS or equivalent.');
   }
-  const payload = {
-    from: emailFrom || 'Wine Cellar <no-reply@winecellar.co.in>',
+
+  return nodemailer.createTransport({
+    host: envTrim('SMTP_HOST') || 'smtp.gmail.com',
+    port: Number(envTrim('SMTP_PORT')) || 587,
+    secure: false,
+    auth: user && pass ? { user, pass } : undefined,
+    tls: {
+      rejectUnauthorized: false,
+    },
+    connectionTimeout: 10000,
+    greetingTimeout: 10000,
+    socketTimeout: 10000,
+  });
+}
+
+const transporter = buildTransport();
+
+function getFromAddress() {
+  return envTrim('EMAIL_FROM') || envTrim('SMTP_FROM') || envTrim('EMAIL_USER') || envTrim('SMTP_USER') || envTrim('GMAIL_USER') || envTrim('EMAIL');
+}
+
+function sendMail(to, subject, text, html) {
+  const mailOptions = {
+    from: getFromAddress(),
     to,
     subject,
     text,
     ...(html ? { html } : {}),
   };
-  const response = await resendClient.emails.send(payload);
-  console.log('Resend email response:', response && response.id ? response.id : response);
-  return response;
+
+  return new Promise((resolve, reject) => {
+    transporter.sendMail(mailOptions, (error, info) => {
+      if (error) {
+        console.error('Error sending email:', error);
+        reject(error);
+      } else {
+        console.log('Email sent:', info && info.response ? info.response : info);
+        resolve(info);
+      }
+    });
+  });
 }
 
 module.exports = { sendMail };
