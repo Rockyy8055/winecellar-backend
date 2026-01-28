@@ -177,55 +177,112 @@ router.post('/api/orders/create', optionalAuth, async (req, res) => {
     const etaEmail = order.estimatedDelivery;
     try {
       const brand = '#350008';
-      const itemsRows = (items || []).map(it => {
-        const itemName = it.name || it.name0 || it.ProductName || it.title || it.productName || it.SKU || it.sku || 'Item';
-        const qty = Number(it.qty || 0);
-        const price = Number(it.price || 0);
-        return `
-        <tr>
-          <td style="padding:8px;border:1px solid #eee"><strong>${itemName}</strong></td>
-          <td style="padding:8px;border:1px solid #eee;text-align:center"><strong>x${qty}</strong></td>
-          <td style="padding:8px;border:1px solid #eee;text-align:right">£${price.toFixed(2)}</td>
-        </tr>`;
-      }).join('');
-      const totalsHtml = `
-        <tr><td colspan="2" style="padding:8px;text-align:right;border:1px solid #eee">Subtotal</td><td style="padding:8px;text-align:right;border:1px solid #eee">£${subtotal.toFixed(2)}</td></tr>
-        <tr><td colspan="2" style="padding:8px;text-align:right;border:1px solid #eee">Discount</td><td style="padding:8px;text-align:right;border:1px solid #eee">£${discount.toFixed(2)}</td></tr>
-        <tr><td colspan="2" style="padding:8px;text-align:right;border:1px solid #eee">VAT</td><td style="padding:8px;text-align:right;border:1px solid #eee">£${vat.toFixed(2)}</td></tr>
-        <tr><td colspan="2" style="padding:8px;text-align:right;border:1px solid #eee">Shipping</td><td style="padding:8px;text-align:right;border:1px solid #eee">£${shippingFee.toFixed(2)}</td></tr>
-        <tr><td colspan="2" style="padding:8px;text-align:right;border:1px solid #eee;font-weight:bold">Total Paid</td><td style="padding:8px;text-align:right;border:1px solid #eee;font-weight:bold">£${total.toFixed(2)}</td></tr>`;
-      const addr = shippingAddress || {};
-      const trackUrl = `${(req.headers.origin || 'https://winecellar.co.in')}/order-status?trackingCode=${order.trackingCode}`;
-      const html = `
-      <div style="font-family:Arial,sans-serif;max-width:640px;margin:auto;border:1px solid #eee">
-        <div style="background:${brand};color:#fff;padding:16px 20px;font-size:18px;font-weight:600">Wine Cellar</div>
-        <div style="padding:20px">
-          <p style="margin:0 0 12px 0">Dear ${customer.name || 'Customer'},</p>
-          <p style="margin:0 0 16px 0">THANK YOU FOR CHOOSING WINE CELLAR.</p>
-          <p style="margin:0 0 16px 0">Your order <strong>${order.trackingCode}</strong> has been received.</p>
-          <p style="margin:0 0 16px 0"><strong>Payment method:</strong> ${isPickAndPay ? 'Pick and Pay (pay on pickup)' : 'Online payment'}</p>
-          <table style="border-collapse:collapse;width:100%;margin:10px 0">
-            <thead>
-              <tr>
-                <th style="padding:8px;border:1px solid #eee;text-align:left">Item</th>
-                <th style="padding:8px;border:1px solid #eee;text-align:center">Qty</th>
-                <th style="padding:8px;border:1px solid #eee;text-align:right">Price</th>
-              </tr>
-            </thead>
-            <tbody>${itemsRows}</tbody>
-            <tfoot>${totalsHtml}</tfoot>
-          </table>
-          <p style="margin:12px 0 0 0"><strong>Shipping address</strong><br/>
-          ${addr.line1 || ''}<br/>${addr.city || ''} ${addr.postcode || ''}</p>
-          <p style="margin:12px 0 0 0">Estimated delivery: <strong>${etaEmail.toDateString()}</strong></p>
-          <p style="margin:12px 0 0 0">Track your order: <a href="${trackUrl}">${trackUrl}</a></p>
-          <p style="margin:16px 0 0 0">Warm regards,<br/>Wine Cellar Team</p>
-        </div>
-      </div>`;
-      // Send email; do not throw if fails
-      sendMail(customer.email, 'THANK YOU FOR CHOOSING WINE CELLAR.', 'Thank you for your order', html).catch(err => {
-        console.error('email receipt failed:', { orderId: String(order._id), email: customer.email, error: err.message });
-      });
+      const billing = order.billingDetails || {};
+      const pickup = order.pickupStore || null;
+      const recipientEmail = billing.email || (customer && customer.email);
+      if (recipientEmail) {
+        const itemsRows = (items || []).map(it => {
+          const itemName = it.name || it.name0 || it.ProductName || it.title || it.productName || it.SKU || it.sku || 'Item';
+          const qty = Number(it.qty || 0);
+          const price = Number(it.price || 0);
+          return `
+          <tr>
+            <td style="padding:8px;border:1px solid #eee"><strong>${itemName}</strong></td>
+            <td style="padding:8px;border:1px solid #eee;text-align:center"><strong>x${qty}</strong></td>
+            <td style="padding:8px;border:1px solid #eee;text-align:right">£${price.toFixed(2)}</td>
+          </tr>`;
+        }).join('');
+        const totalsHtml = `
+          <tr><td colspan="2" style="padding:8px;text-align:right;border:1px solid #eee">Subtotal</td><td style="padding:8px;text-align:right;border:1px solid #eee">£${subtotal.toFixed(2)}</td></tr>
+          <tr><td colspan="2" style="padding:8px;text-align:right;border:1px solid #eee">Discount</td><td style="padding:8px;text-align:right;border:1px solid #eee">£${discount.toFixed(2)}</td></tr>
+          <tr><td colspan="2" style="padding:8px;text-align:right;border:1px solid #eee">VAT</td><td style="padding:8px;text-align:right;border:1px solid #eee">£${vat.toFixed(2)}</td></tr>
+          <tr><td colspan="2" style="padding:8px;text-align:right;border:1px solid #eee">Shipping</td><td style="padding:8px;text-align:right;border:1px solid #eee">£${shippingFee.toFixed(2)}</td></tr>
+          <tr><td colspan="2" style="padding:8px;text-align:right;border:1px solid #eee;font-weight:bold">Total ${isPickAndPay ? 'Due at Pickup' : 'Paid'}</td><td style="padding:8px;text-align:right;border:1px solid #eee;font-weight:bold">£${total.toFixed(2)}</td></tr>`;
+        const trackUrl = `${(req.headers.origin || 'https://winecellar.co.in')}/order-status?trackingCode=${order.trackingCode}`;
+        const paymentLabels = {
+          cod: 'Pick and Pay (pay at the store)',
+          pick_and_pay: 'Pick and Pay (pay at the store)',
+          pickup: 'Pick and Pay (pay at the store)',
+          paypal: 'PayPal',
+          credit_card: 'Credit Card',
+          card: 'Card',
+          debit_card: 'Debit Card'
+        };
+        const paymentLabel = paymentLabels[m] || (m ? m.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) : 'Online payment');
+        const fullName = `${billing.firstName || ''} ${billing.lastName || ''}`.trim() || customer.name || 'Customer';
+        const billingLines = [
+          fullName && `<strong>Name:</strong> ${fullName}`,
+          billing.email && `<strong>Email:</strong> ${billing.email}`,
+          billing.phone && `<strong>Phone:</strong> ${billing.phone}`,
+          billing.address && `<strong>Address:</strong> ${billing.address}`,
+          billing.postcode && `<strong>Postcode:</strong> ${billing.postcode}`
+        ].filter(Boolean).join('<br/>');
+        const pickupLines = pickup ? [
+          pickup.storeName && `<strong>Store:</strong> ${pickup.storeName}`,
+          pickup.addressLine1 && `${pickup.addressLine1}`,
+          pickup.addressLine2 && `${pickup.addressLine2}`,
+          (pickup.city || pickup.state || pickup.postcode) && [pickup.city, pickup.state, pickup.postcode].filter(Boolean).join(', '),
+          pickup.phone && `Contact: ${pickup.phone}`
+        ].filter(Boolean).join('<br/>') : '';
+        const deliveryLines = !isPickAndPay ? (() => {
+          const addr = order.shippingAddress || {};
+          const parts = [addr.line1 || addr.addressLine1, addr.line2 || addr.addressLine2, addr.city, addr.state, addr.postcode, addr.country].filter(Boolean);
+          return parts.length ? parts.join('<br/>') : '';
+        })() : '';
+
+        const html = `
+        <div style="font-family:Arial,sans-serif;max-width:640px;margin:auto;border:1px solid #eee">
+          <div style="background:${brand};color:#fff;padding:16px 20px;font-size:18px;font-weight:600">Wine Cellar</div>
+          <div style="padding:20px">
+            <p style="margin:0 0 12px 0">Dear ${fullName},</p>
+            <p style="margin:0 0 16px 0">Thank you for placing an order with Wine Cellar. We appreciate your patronage—visit us soon!</p>
+            <p style="margin:0 0 16px 0">Your order <strong>${order.trackingCode}</strong> has been received.</p>
+            <p style="margin:0 0 16px 0"><strong>Payment method:</strong> ${paymentLabel}</p>
+            <table style="border-collapse:collapse;width:100%;margin:10px 0">
+              <thead>
+                <tr>
+                  <th style="padding:8px;border:1px solid #eee;text-align:left">Item</th>
+                  <th style="padding:8px;border:1px solid #eee;text-align:center">Qty</th>
+                  <th style="padding:8px;border:1px solid #eee;text-align:right">Price</th>
+                </tr>
+              </thead>
+              <tbody>${itemsRows}</tbody>
+              <tfoot>${totalsHtml}</tfoot>
+            </table>
+            ${billingLines ? `<p style="margin:16px 0 0 0"><strong>Billing details</strong><br/>${billingLines}</p>` : ''}
+            ${pickupLines ? `<p style="margin:16px 0 0 0"><strong>Store pickup</strong><br/>${pickupLines}</p>` : ''}
+            ${deliveryLines ? `<p style="margin:16px 0 0 0"><strong>Delivery address</strong><br/>${deliveryLines}</p>` : ''}
+            <p style="margin:16px 0 0 0">Estimated delivery: <strong>${etaEmail.toDateString()}</strong></p>
+            <p style="margin:12px 0 0 0">Track your order: <a href="${trackUrl}">${trackUrl}</a></p>
+            <p style="margin:16px 0 0 0">Warm regards,<br/>Wine Cellar Team</p>
+          </div>
+        </div>`;
+        const plainTextSections = [
+          `Dear ${fullName},`,
+          'Thank you for placing an order with Wine Cellar. We appreciate your patronage—visit us soon!',
+          `Your order ${order.trackingCode} has been received.`,
+          `Payment method: ${paymentLabel}`,
+          'Items:',
+          ...((items || []).map(it => ` - ${(it.name || it.title || it.productName || it.SKU || 'Item')} x${Number(it.qty || 0)} (£${Number(it.price || 0).toFixed(2)})`)),
+          `Subtotal: £${subtotal.toFixed(2)}`,
+          `Discount: £${discount.toFixed(2)}`,
+          `VAT: £${vat.toFixed(2)}`,
+          `Shipping: £${shippingFee.toFixed(2)}`,
+          `Total ${isPickAndPay ? 'Due at Pickup' : 'Paid'}: £${total.toFixed(2)}`,
+          billingLines ? `Billing details:\n${billingLines.replace(/<br\/>/g, '\n').replace(/<strong>|<\/strong>/g, '')}` : '',
+          pickupLines ? `Store pickup:\n${pickupLines.replace(/<br\/>/g, '\n').replace(/<strong>|<\/strong>/g, '')}` : '',
+          deliveryLines ? `Delivery address:\n${deliveryLines.replace(/<br\/>/g, '\n')}` : '',
+          `Estimated delivery: ${etaEmail.toDateString()}`,
+          `Track your order: ${trackUrl}`,
+          'Warm regards,',
+          'Wine Cellar Team'
+        ].filter(Boolean);
+        const plainText = plainTextSections.join('\n\n');
+        // Send email; do not throw if fails
+        sendMail(recipientEmail, 'Thank you for placing an order with Wine Cellar', plainText, html).catch(err => {
+          console.error('email receipt failed:', { orderId: String(order._id), email: recipientEmail, error: err.message });
+        });
+      }
     } catch (err) {
       console.error('email build/send error:', err.message);
     }
