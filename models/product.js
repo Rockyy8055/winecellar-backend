@@ -81,7 +81,8 @@ const productSchema = new mongoose.Schema({
   },
   stock: {
     type: Number,
-    required: true,
+    required: false,
+    default: 0,
   },
   sizeStocks: {
     type: Map,

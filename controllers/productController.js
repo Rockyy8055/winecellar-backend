@@ -1,7 +1,7 @@
 const Product = require("../models/product");
 const Inventory = require("../models/inventory");
 const OrderDetails = require("../models/orderDetails");
-const { uploadProductImage, deleteOldImage } = require('../services/imageUploadService');
+const { uploadProductImage: uploadProductImageToS3, deleteProductImageByUrl } = require('../services/productImageUpload');
 const { toPublicUrl } = require('../utils/publicUrl');
 
 // Standard sizes for validation
@@ -13,6 +13,51 @@ function normalizeSizeStocks(sizeStocks = {}) {
     const value = sizeStocks[size];
     normalized[size] = Math.max(0, Math.floor(Number(value) || 0));
   });
+  return normalized;
+}
+
+function parseJsonMaybe(value) {
+  if (value === undefined || value === null) {
+    return value;
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return undefined;
+    }
+    try {
+      return JSON.parse(trimmed);
+    } catch (_) {
+      return value;
+    }
+  }
+  return value;
+}
+
+function normalizeSizeKey(input) {
+  return String(input || '').toUpperCase().replace(/\s+/g, '');
+}
+
+function parseSizeStocksInput(raw) {
+  const parsed = parseJsonMaybe(raw);
+  if (parsed === undefined) {
+    return undefined;
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new Error('sizeStocks must be an object');
+  }
+  const normalized = {};
+  for (const [k, v] of Object.entries(parsed)) {
+    const key = normalizeSizeKey(k);
+    if (!STANDARD_SIZES.includes(key)) {
+      throw new Error(`Invalid size: ${key}`);
+    }
+    const numValue = Number(v);
+    if (!Number.isFinite(numValue) || numValue < 0) {
+      throw new Error(`Invalid stock value for ${key}: must be a non-negative number`);
+    }
+    normalized[key] = Math.floor(numValue);
+  }
   return normalized;
 }
 
@@ -67,23 +112,12 @@ function formatProductForResponse(doc) {
 }
 
 function validateSizeStocks(sizeStocks = {}) {
-  if (typeof sizeStocks !== 'object' || sizeStocks === null) {
-    return { valid: false, error: 'sizeStocks must be an object' };
+  try {
+    const normalized = parseSizeStocksInput(sizeStocks) || {};
+    return { valid: true, normalized };
+  } catch (e) {
+    return { valid: false, error: e.message };
   }
-  
-  const normalized = {};
-  for (const [size, value] of Object.entries(sizeStocks)) {
-    if (!STANDARD_SIZES.includes(size)) {
-      return { valid: false, error: `Invalid size: ${size}` };
-    }
-    const numValue = Number(value);
-    if (!Number.isFinite(numValue) || numValue < 0) {
-      return { valid: false, error: `Invalid stock value for ${size}: must be a non-negative number` };
-    }
-    normalized[size] = Math.floor(numValue);
-  }
-  
-  return { valid: true, normalized };
 }
 
 function syncDescriptionFields(payload = {}) {
@@ -215,7 +249,7 @@ function buildProductPayloadFromBody(body = {}) {
     payload.price = price;
   }
 
-  // Handle sizeStocks if provided
+  // Handle sizeStocks if provided (multipart may send as JSON string)
   if (body.sizeStocks !== undefined) {
     const validation = validateSizeStocks(body.sizeStocks);
     if (!validation.valid) {
@@ -224,12 +258,11 @@ function buildProductPayloadFromBody(body = {}) {
     payload.sizeStocks = validation.normalized;
   }
 
-  // Only set stock if not using sizeStocks (will be calculated by middleware)
-  if (body.sizeStocks === undefined) {
-    const stock = coerceNumber(body.stock);
-    if (stock !== undefined) {
-      payload.stock = Math.max(0, Math.floor(stock));
-    }
+  const stock = coerceNumber(body.stock);
+  if (stock !== undefined) {
+    payload.stock = Math.max(0, Math.floor(stock));
+  } else if (payload.sizeStocks !== undefined) {
+    payload.stock = computeTotalStock(payload.sizeStocks);
   }
 
   syncDescriptionFields(payload);
@@ -249,22 +282,24 @@ const addProduct = async (req, res) => {
     const basePayload = buildProductPayloadFromBody(req.body || {});
     const newProduct = new Product(basePayload);
 
-    // Handle image upload (either from file upload or data URL)
-    const imageInput = req.file || req.body.img || req.body.imageUrl;
-    if (imageInput) {
+    // Handle image upload:
+    // - multipart file field `image` => upload to S3
+    // - img/imageUrl string => store as-is
+    if (req.file) {
       try {
         console.log('Processing image upload...');
-        const uploaded = await uploadProductImage(newProduct._id, imageInput);
-        const storedPath = uploaded.relativePath || uploaded.url;
-        newProduct.img = storedPath;
+        const uploaded = await uploadProductImageToS3(newProduct._id, req.file);
+        newProduct.img = uploaded.url;
         console.log('Image uploaded successfully:', uploaded.url);
       } catch (uploadError) {
         console.error('Image upload failed:', uploadError.message);
-        return res.status(400).json({ 
-          error: 'Image upload failed', 
-          details: uploadError.message 
+        return res.status(400).json({
+          error: 'Image upload failed',
+          details: uploadError.message
         });
       }
+    } else if (req.body?.img || req.body?.imageUrl) {
+      newProduct.img = req.body.img || req.body.imageUrl;
     }
 
     const savedProduct = await newProduct.save();
@@ -291,17 +326,11 @@ const deleteAllProducts = async (req, res) => {
 // Admin list (raw), simple pagination/search
 const adminListProducts = async (req, res) => {
   try {
-    const page = Math.max(1, parseInt(req.query.page || '1', 10));
-    const rawLimit = parseInt(req.query.limit || '20', 10);
-    const limit = Math.max(1, Math.min(5000, Number.isFinite(rawLimit) ? rawLimit : 20));
     const q = (req.query.q || '').trim();
     const filter = q ? { name: { $regex: q, $options: 'i' } } : {};
-    const total = await Product.countDocuments(filter);
-    const items = await Product.find(filter).sort({ modified_at: -1 }).skip((page-1)*limit).limit(limit);
-
+    const items = await Product.find(filter).sort({ modified_at: -1 });
     const formattedItems = items.map(formatProductForResponse).filter(Boolean);
-
-    res.json({ items: formattedItems, total, page, pages: Math.ceil(total/limit) });
+    res.json(formattedItems);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -324,25 +353,31 @@ const adminUpdateProduct = async (req, res) => {
     const existingProduct = await Product.findById(id);
     if (!existingProduct) return res.status(404).json({ error: 'Not found' });
     const oldImageUrl = existingProduct.img;
-    let newImagePath = null;
+    let newImageUrl = null;
 
     // Handle image upload (either from file upload or data URL)
-    const imageInput = req.file || req.body.img || req.body.imageUrl;
-    if (imageInput) {
+    if (req.file) {
       try {
         console.log('Processing image update...');
-        const uploaded = await uploadProductImage(id, imageInput);
-        const storedPath = uploaded.relativePath || uploaded.url;
-        update.img = storedPath;
-        newImagePath = storedPath;
+        const uploaded = await uploadProductImageToS3(id, req.file);
+        update.img = uploaded.url;
+        newImageUrl = uploaded.url;
         console.log('Image updated successfully:', uploaded.url);
       } catch (uploadError) {
         console.error('Image update failed:', uploadError.message);
-        return res.status(400).json({ 
-          error: 'Image upload failed', 
-          details: uploadError.message 
+        return res.status(400).json({
+          error: 'Image upload failed',
+          details: uploadError.message
         });
       }
+    } else if (req.body?.img || req.body?.imageUrl) {
+      update.img = req.body.img || req.body.imageUrl;
+      newImageUrl = update.img;
+    }
+
+    // If sizeStocks was supplied but stock omitted, compute stock for query update
+    if (update.sizeStocks !== undefined && update.stock === undefined) {
+      update.stock = computeTotalStock(update.sizeStocks);
     }
 
     update.modified_at = new Date();
@@ -354,8 +389,12 @@ const adminUpdateProduct = async (req, res) => {
     );
     if (!doc) return res.status(404).json({ error: 'Not found' });
 
-    if (oldImageUrl && newImagePath && newImagePath !== oldImageUrl) {
-      await deleteOldImage(oldImageUrl);
+    if (oldImageUrl && newImageUrl && newImageUrl !== oldImageUrl) {
+      try {
+        await deleteProductImageByUrl(oldImageUrl);
+      } catch (_) {
+        // ignore S3 deletion errors
+      }
     }
 
     console.log('Product updated successfully:', id);
@@ -419,8 +458,13 @@ const adminDeleteProduct = async (req, res) => {
     if (!id) return res.status(400).json({ message: 'Invalid product id' });
     const doc = await Product.findByIdAndDelete(id);
     if (!doc) return res.status(404).json({ message: 'Product not found' });
-    // Optional: delete image from storage if you store keys
-    // if (doc.imageKey) await storage.delete(doc.imageKey)
+    if (doc.img) {
+      try {
+        await deleteProductImageByUrl(doc.img);
+      } catch (_) {
+        // ignore
+      }
+    }
     return res.status(200).json({ ok: true });
   } catch (e) {
     if (e?.name === 'CastError') return res.status(400).json({ message: 'Invalid product id' });

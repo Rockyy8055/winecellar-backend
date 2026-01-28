@@ -1,5 +1,5 @@
 const path = require('path');
-const { PutObjectCommand } = require('@aws-sdk/client-s3');
+const { PutObjectCommand, DeleteObjectCommand } = require('@aws-sdk/client-s3');
 const { s3Client } = require('./s3Client');
 
 const bucketName = process.env.AWS_S3_BUCKET;
@@ -14,6 +14,38 @@ function sanitizeFilename(filename = '') {
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '') || 'image';
   return `${safeName}${ext || ''}`;
+}
+
+function extractKeyFromUrl(urlString = '') {
+  if (!urlString || typeof urlString !== 'string') {
+    return null;
+  }
+  if (!/^https?:\/\//i.test(urlString)) {
+    return null;
+  }
+  try {
+    const url = new URL(urlString);
+    const pathname = url.pathname || '';
+    const key = pathname.replace(/^\/+/, '');
+    return key || null;
+  } catch (_) {
+    return null;
+  }
+}
+
+async function deleteProductImageByUrl(urlString) {
+  if (!bucketName || !s3Client) {
+    return;
+  }
+  const key = extractKeyFromUrl(urlString);
+  if (!key) {
+    return;
+  }
+  const command = new DeleteObjectCommand({
+    Bucket: bucketName,
+    Key: key,
+  });
+  await s3Client.send(command);
 }
 
 function buildObjectKey(productId, originalname) {
@@ -65,4 +97,5 @@ async function uploadProductImage(productId, file) {
 
 module.exports = {
   uploadProductImage,
+  deleteProductImageByUrl,
 };
