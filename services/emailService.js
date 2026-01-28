@@ -1,33 +1,51 @@
 const nodemailer = require('nodemailer');
 
+function envTrim(key) {
+  const v = process.env[key];
+  return typeof v === 'string' ? v.trim() : v;
+}
+
+function envNumber(key, fallback) {
+  const v = envTrim(key);
+  const n = Number(v);
+  return Number.isFinite(n) ? n : fallback;
+}
+
 function buildTransport() {
   // Option A: Explicit SMTP
-  if (process.env.SMTP_HOST) {
+  const smtpHost = envTrim('SMTP_HOST');
+  if (smtpHost) {
     return nodemailer.createTransport({
-      host: process.env.SMTP_HOST,
-      port: Number(process.env.SMTP_PORT || 587),
-      secure: String(process.env.SMTP_SECURE || '').toLowerCase() === 'true' || Number(process.env.SMTP_PORT) === 465,
-      auth: process.env.SMTP_USER && process.env.SMTP_PASS ? { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS } : undefined,
+      host: smtpHost,
+      port: envNumber('SMTP_PORT', 587),
+      secure: String(envTrim('SMTP_SECURE') || '').toLowerCase() === 'true' || envNumber('SMTP_PORT', 587) === 465,
+      auth: envTrim('SMTP_USER') && envTrim('SMTP_PASS') ? { user: envTrim('SMTP_USER'), pass: envTrim('SMTP_PASS') } : undefined,
     });
   }
   // Option B: Gmail App Password
-  if (process.env.GMAIL_USER && process.env.GMAIL_APP_PASS) {
+  if (envTrim('GMAIL_USER') && envTrim('GMAIL_APP_PASS')) {
     return nodemailer.createTransport({
       service: 'gmail',
-      auth: { user: process.env.GMAIL_USER, pass: process.env.GMAIL_APP_PASS },
+      auth: { user: envTrim('GMAIL_USER'), pass: envTrim('GMAIL_APP_PASS') },
     });
   }
   // Backward compatibility (existing env in project)
   return nodemailer.createTransport({
     service: 'gmail',
-    auth: { user: process.env.EMAIL, pass: process.env.EMAIL_PASSWORD },
+    auth: { user: envTrim('EMAIL'), pass: envTrim('EMAIL_PASSWORD') },
   });
 }
 
 const transporter = buildTransport();
 
+transporter.verify().then(() => {
+  console.log('Email transport ready');
+}).catch((err) => {
+  console.error('Email transport verify failed:', err && err.message ? err.message : err);
+});
+
 function getFromAddress() {
-  return process.env.SMTP_FROM || process.env.GMAIL_USER || process.env.EMAIL;
+  return envTrim('SMTP_FROM') || envTrim('GMAIL_USER') || envTrim('EMAIL');
 }
 
 const sendMail = (to, subject, text, html) => {
