@@ -1,20 +1,15 @@
 const Product = require("../models/product");
-const Inventory = require("../models/inventory");
 const OrderDetails = require("../models/orderDetails");
 const { uploadProductImage: uploadProductImageToS3, deleteProductImageByUrl } = require('../services/productImageUpload');
 const { toPublicUrl } = require('../utils/publicUrl');
-
-// Standard sizes for validation
-const STANDARD_SIZES = ['1.5LTR', '1LTR', '75CL', '70CL', '35CL', '20CL', '10CL', '5CL'];
-
-function normalizeSizeStocks(sizeStocks = {}) {
-  const normalized = {};
-  STANDARD_SIZES.forEach(size => {
-    const value = sizeStocks[size];
-    normalized[size] = Math.max(0, Math.floor(Number(value) || 0));
-  });
-  return normalized;
-}
+const {
+  SAFE_SIZE_KEYS,
+  normalizeSizeKey,
+  parseSizeStocksInput,
+  normalizeSizeStocksForResponse,
+  computeTotalStock,
+  createEmptySizeStocks,
+} = require('../utils/sizeStocks');
 
 function extractSizeStocksFromBody(body = {}) {
   const extracted = {};
@@ -30,7 +25,9 @@ function extractSizeStocksFromBody(body = {}) {
       continue;
     }
     const normalizedKey = normalizeSizeKey(rawSize);
-    extracted[normalizedKey] = value;
+    if (SAFE_SIZE_KEYS.includes(normalizedKey)) {
+      extracted[normalizedKey] = value;
+    }
   }
 
   return extracted;
@@ -54,33 +51,6 @@ function parseJsonMaybe(value) {
   return value;
 }
 
-function normalizeSizeKey(input) {
-  return String(input || '').toUpperCase().replace(/\s+/g, '');
-}
-
-function parseSizeStocksInput(raw) {
-  const parsed = parseJsonMaybe(raw);
-  if (parsed === undefined) {
-    return undefined;
-  }
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-    throw new Error('sizeStocks must be an object');
-  }
-  const normalized = {};
-  for (const [k, v] of Object.entries(parsed)) {
-    const key = normalizeSizeKey(k);
-    if (!STANDARD_SIZES.includes(key)) {
-      throw new Error(`Invalid size: ${key}`);
-    }
-    const numValue = Number(v);
-    if (!Number.isFinite(numValue) || numValue < 0) {
-      throw new Error(`Invalid stock value for ${key}: must be a non-negative number`);
-    }
-    normalized[key] = Math.floor(numValue);
-  }
-  return normalized;
-}
-
 function formatProductResponse(doc) {
   if (!doc) {
     return null;
@@ -90,7 +60,7 @@ function formatProductResponse(doc) {
   const productIdCandidate = base._id || base.ProductId || base.id;
   const productId = productIdCandidate ? String(productIdCandidate) : undefined;
   const sizeStocksSource = doc.sizeStocks?.toObject?.() || base.sizeStocks || {};
-  const sizeStocks = normalizeSizeStocks(sizeStocksSource);
+  const sizeStocks = normalizeSizeStocksForResponse(sizeStocksSource);
 
   const rawImage = base.img || base.imageUrl || base.image || '';
   const publicImage = rawImage ? toPublicUrl(rawImage) : '';
@@ -102,10 +72,6 @@ function formatProductResponse(doc) {
     imageUrl: publicImage,
     sizeStocks,
   };
-}
-
-function computeTotalStock(sizeStocks = {}) {
-  return Object.values(normalizeSizeStocks(sizeStocks)).reduce((sum, value) => sum + value, 0);
 }
 
 function formatProductForResponse(doc) {
@@ -131,9 +97,9 @@ function formatProductForResponse(doc) {
   };
 }
 
-function validateSizeStocks(sizeStocks = {}) {
+function validateSizeStocks(sizeStocks = {}, options = {}) {
   try {
-    const normalized = parseSizeStocksInput(sizeStocks) || {};
+    const normalized = parseSizeStocksInput(sizeStocks, { rejectUnknown: true, fillMissing: true, coerce: 'strict', ...options }) || createEmptySizeStocks();
     return { valid: true, normalized };
   } catch (e) {
     return { valid: false, error: e.message };
@@ -451,14 +417,18 @@ const adminUpdateProductStock = async (req, res) => {
 
     // Handle sizeStocks updates
     if (sizeStocks !== undefined) {
-      const validation = validateSizeStocks(sizeStocks);
+      const validation = validateSizeStocks(sizeStocks, { fillMissing: false });
       if (!validation.valid) {
         return res.status(400).json({ error: validation.error });
       }
       
       // Update sizeStocks
-      const currentSizeStocks = normalizeSizeStocks(product.sizeStocks?.toObject?.() || {});
-      const updatedSizeStocks = { ...currentSizeStocks, ...validation.normalized };
+      const currentSizeStocks = normalizeSizeStocksForResponse(product.sizeStocks?.toObject?.() || product.sizeStocks || {});
+      const updates = validation.normalized;
+      const updatedSizeStocks = { ...currentSizeStocks };
+      Object.entries(updates).forEach(([key, value]) => {
+        updatedSizeStocks[key] = Math.max(0, Math.floor(Number(value) || 0));
+      });
       product.sizeStocks = updatedSizeStocks;
       product.stock = computeTotalStock(updatedSizeStocks);
     } else if (delta !== undefined) {
@@ -651,7 +621,7 @@ const getBestSellers = async (req, res) => {
 
     const normalized = rows.map((r) => {
       const p = Array.isArray(r.product) && r.product.length ? r.product[0] : {};
-      const sizeStocks = normalizeSizeStocks(p.sizeStocks?.toObject?.() || p.sizeStocks || {});
+      const sizeStocks = normalizeSizeStocksForResponse(p.sizeStocks?.toObject?.() || p.sizeStocks || {});
       return {
         id: (p._id && String(p._id)) || p.id || p.ProductId || r._id,
         ProductId: p.ProductId || (p._id && String(p._id)) || r._id,
@@ -697,7 +667,7 @@ const getBestSellers = async (req, res) => {
 
       const fallback = allTime.map((r) => {
         const p = Array.isArray(r.product) && r.product.length ? r.product[0] : {};
-        const sizeStocks = normalizeSizeStocks(p.sizeStocks?.toObject?.() || p.sizeStocks || {});
+        const sizeStocks = normalizeSizeStocksForResponse(p.sizeStocks?.toObject?.() || p.sizeStocks || {});
         return {
           id: (p._id && String(p._id)) || p.id || p.ProductId || r._id,
           ProductId: p.ProductId || (p._id && String(p._id)) || r._id,

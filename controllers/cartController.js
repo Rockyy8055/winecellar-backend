@@ -2,18 +2,10 @@ const Product = require("../models/product");
 const CartItem = require("../models/cartItem");
 const ShoppingSession = require("../models/shoppingSession");
 const { toPublicUrl } = require('../utils/publicUrl');
-
-// Standard sizes for validation
-const STANDARD_SIZES = ['1.5LTR', '1LTR', '75CL', '70CL', '35CL', '20CL', '10CL', '5CL'];
-
-function normalizeSizeStocks(sizeStocks = {}) {
-  const normalized = {};
-  STANDARD_SIZES.forEach(size => {
-    const value = sizeStocks[size];
-    normalized[size] = Math.max(0, Math.floor(Number(value) || 0));
-  });
-  return normalized;
-}
+const {
+  SAFE_SIZE_KEYS,
+  normalizeSizeStocksForResponse,
+} = require('../utils/sizeStocks');
 
 // Add item to cart
 const addToCart = async (req, res) => {
@@ -36,7 +28,7 @@ const addToCart = async (req, res) => {
     }
 
     // Validate size if provided
-    if (size && !STANDARD_SIZES.includes(size)) {
+    if (size && !SAFE_SIZE_KEYS.includes(size)) {
       return res.status(400).json({ error: 'Invalid size' });
     }
 
@@ -48,7 +40,7 @@ const addToCart = async (req, res) => {
     }
 
     // Check if product has sizeStocks and size is required
-    const sizeStocks = normalizeSizeStocks(product.sizeStocks?.toObject?.() || {});
+    const sizeStocks = normalizeSizeStocksForResponse(product.sizeStocks?.toObject?.() || product.sizeStocks || {});
     const hasMultipleSizes = Object.values(sizeStocks).some(stock => stock > 0) || Object.keys(sizeStocks).length > 0;
     
     if (hasMultipleSizes && !size) {
@@ -119,7 +111,7 @@ const getCart = async (req, res) => {
 
     const formattedItems = cartItems.map(item => {
       const product = item.product_id || {};
-      const sizeStocks = normalizeSizeStocks(product.sizeStocks?.toObject?.() || {});
+      const sizeStocks = normalizeSizeStocksForResponse(product.sizeStocks?.toObject?.() || product.sizeStocks || {});
       
       return {
         id: item._id,
@@ -167,7 +159,7 @@ const updateCartItem = async (req, res) => {
     
     // Check stock availability
     if (cartItem.size) {
-      const sizeStocks = normalizeSizeStocks(product.sizeStocks?.toObject?.() || {});
+      const sizeStocks = normalizeSizeStocksForResponse(product.sizeStocks?.toObject?.() || product.sizeStocks || {});
       const availableStock = sizeStocks[cartItem.size] || 0;
       
       if (quantity > availableStock) {

@@ -1,49 +1,9 @@
 const mongoose = require("mongoose");
-
-const SAFE_SIZE_KEYS = ['1.5LTR', '1LTR', '75CL', '70CL', '35CL', '20CL', '10CL', '5CL'];
-
-function createEmptySizeStocks() {
-  return SAFE_SIZE_KEYS.reduce((acc, key) => {
-    acc[key] = 0;
-    return acc;
-  }, {});
-}
-
-function normalizeSizeStocksForModel(input = {}) {
-  if (input && typeof input.toObject === 'function') {
-    input = input.toObject();
-  }
-
-  const normalized = {};
-
-  if (input && typeof input === 'object') {
-    Object.entries(input).forEach(([rawKey, value]) => {
-      const key = String(rawKey || '')
-        .toUpperCase()
-        .replace(/\s+/g, '');
-      if (!SAFE_SIZE_KEYS.includes(key)) {
-        return;
-      }
-      const num = Number(value);
-      normalized[key] = Number.isFinite(num) && num >= 0 ? Math.floor(num) : 0;
-    });
-  }
-
-  SAFE_SIZE_KEYS.forEach((key) => {
-    if (!Object.prototype.hasOwnProperty.call(normalized, key)) {
-      normalized[key] = 0;
-    }
-  });
-
-  return normalized;
-}
-
-function sumSizeStocks(sizeStocks = {}) {
-  return SAFE_SIZE_KEYS.reduce((total, key) => {
-    const num = Number(sizeStocks?.[key]);
-    return total + (Number.isFinite(num) && num > 0 ? Math.floor(num) : 0);
-  }, 0);
-}
+const {
+  parseSizeStocksInput,
+  computeTotalStock,
+  createEmptySizeStocks,
+} = require("../utils/sizeStocks");
 
 const productSchema = new mongoose.Schema({
   name: {
@@ -130,19 +90,32 @@ const productSchema = new mongoose.Schema({
     default: 0,
   },
   sizeStocks: {
-    type: mongoose.Schema.Types.Mixed,
+    type: Object,
     default: () => createEmptySizeStocks(),
   },
 });
 
 // Pre-save middleware to normalize sizeStocks and sync total stock
 productSchema.pre('save', function(next) {
-  if (this.isModified('sizeStocks') || this.isNew) {
-    const normalized = normalizeSizeStocksForModel(this.sizeStocks || {});
-    this.sizeStocks = normalized;
-    this.stock = sumSizeStocks(normalized);
+  try {
+    if (this.isModified('sizeStocks') || this.isNew) {
+      const normalized = parseSizeStocksInput(this.sizeStocks, { rejectUnknown: true, fillMissing: true, coerce: 'strict' }) || createEmptySizeStocks();
+      this.sizeStocks = normalized;
+
+      if (!this.isModified('stock') || this.stock === undefined || this.stock === null) {
+        this.stock = computeTotalStock(normalized);
+      }
+    }
+
+    if (this.isModified('stock') || this.isNew) {
+      const num = Number(this.stock ?? 0);
+      this.stock = Number.isFinite(num) && num >= 0 ? Math.floor(num) : 0;
+    }
+
+    next();
+  } catch (err) {
+    next(err);
   }
-  next();
 });
 
 const Product = mongoose.model("Product", productSchema);
