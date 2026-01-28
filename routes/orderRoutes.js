@@ -7,7 +7,101 @@ const { sendMail } = require('../services/emailService');
 const OrderDetails = require('../models/orderDetails');
 
 const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
-const PICK_AND_PAY_METHODS = new Set(['cod', 'pick_and_pay', 'pickup']);
+const VALID_PAYMENT_METHODS = new Map([
+  ['debit card', 'Debit Card'],
+  ['credit card', 'Credit Card'],
+  ['paypal', 'PayPal'],
+  ['pick & pay', 'Pick & Pay'],
+  ['pick and pay', 'Pick & Pay'],
+  ['pick_pay', 'Pick & Pay'],
+  ['pickandpay', 'Pick & Pay']
+]);
+
+const generateOrderId = () => {
+  const ts = Date.now();
+  const rand = Math.floor(Math.random() * 100000).toString().padStart(5, '0');
+  return `WC-${ts}-${rand}`;
+};
+
+function normalizePaymentMethod(value) {
+  if (!value) return null;
+  const key = String(value).trim().toLowerCase();
+  return VALID_PAYMENT_METHODS.get(key) || null;
+}
+
+function normalizeOrderItems(orderItems) {
+  if (!Array.isArray(orderItems)) return [];
+  return orderItems.reduce((acc, item) => {
+    if (!item || typeof item !== 'object') return acc;
+    const name = String(item.name || item.title || '').trim();
+    const qty = Number(item.qty ?? item.quantity ?? 0);
+    const price = Number(item.price ?? item.amount ?? 0);
+    if (!name || !Number.isFinite(qty) || qty <= 0 || !Number.isFinite(price) || price < 0) {
+      return acc;
+    }
+    acc.push({ name, qty, price });
+    return acc;
+  }, []);
+}
+
+function buildOrderEmail({ orderId, customerName, paymentMethod, orderItems, subtotal, tax, total, shopLocation }) {
+  const brand = '#350008';
+  const rows = orderItems.map(item => {
+    const lineTotal = round2(item.qty * item.price);
+    return `
+      <tr>
+        <td style="padding:8px;border:1px solid #eee;text-align:left">${item.name}</td>
+        <td style="padding:8px;border:1px solid #eee;text-align:center">x${item.qty}</td>
+        <td style="padding:8px;border:1px solid #eee;text-align:right">£${lineTotal.toFixed(2)}</td>
+      </tr>`;
+  }).join('');
+  const totals = `
+      <tr><td colspan="2" style="padding:8px;border:1px solid #eee;text-align:right">Subtotal</td><td style="padding:8px;border:1px solid #eee;text-align:right">£${subtotal.toFixed(2)}</td></tr>
+      <tr><td colspan="2" style="padding:8px;border:1px solid #eee;text-align:right">Tax</td><td style="padding:8px;border:1px solid #eee;text-align:right">£${tax.toFixed(2)}</td></tr>
+      <tr><td colspan="2" style="padding:8px;border:1px solid #eee;text-align:right;font-weight:bold">Total</td><td style="padding:8px;border:1px solid #eee;text-align:right;font-weight:bold">£${total.toFixed(2)}</td></tr>`;
+
+  const html = `
+    <div style="font-family:Arial,sans-serif;max-width:640px;margin:auto;border:1px solid #eee">
+      <div style="background:${brand};color:#fff;padding:16px 20px;font-size:18px;font-weight:600">Wine Cellar</div>
+      <div style="padding:20px">
+        <p style="margin:0 0 12px 0">Dear ${customerName || 'Customer'},</p>
+        <p style="margin:0 0 16px 0">Thank you for placing an order with Wine Cellar. This is a transactional confirmation email.</p>
+        <p style="margin:0 0 16px 0">Your order <strong>${orderId}</strong> has been received.</p>
+        <p style="margin:0 0 16px 0"><strong>Payment method:</strong> ${paymentMethod}</p>
+        <table style="border-collapse:collapse;width:100%;margin:10px 0">
+          <thead>
+            <tr>
+              <th style="padding:8px;border:1px solid #eee;text-align:left">Item</th>
+              <th style="padding:8px;border:1px solid #eee;text-align:center">Qty</th>
+              <th style="padding:8px;border:1px solid #eee;text-align:right">Line Total</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+          <tfoot>${totals}</tfoot>
+        </table>
+        ${shopLocation ? `<p style="margin:16px 0 0 0"><strong>Pickup location:</strong><br/>${shopLocation}</p>` : ''}
+        <p style="margin:16px 0 0 0">If you have questions about your order, reply to this email or contact support.</p>
+        <p style="margin:16px 0 0 0">Warm regards,<br/>Wine Cellar Team</p>
+        <p style="margin:16px 0 0 0;font-size:12px;color:#555">This is an automated transactional email. Please do not reply directly.</p>
+      </div>
+    </div>`;
+
+  const plainTextLines = [
+    `Dear ${customerName || 'Customer'},`,
+    'Thank you for placing an order with Wine Cellar.',
+    `Order ID: ${orderId}`,
+    `Payment method: ${paymentMethod}`,
+    'Items:',
+    ...orderItems.map(item => ` - ${item.name} x${item.qty} (£${round2(item.qty * item.price).toFixed(2)})`),
+    `Subtotal: £${subtotal.toFixed(2)}`,
+    `Tax: £${tax.toFixed(2)}`,
+    `Total: £${total.toFixed(2)}`,
+    shopLocation ? `Pickup location: ${shopLocation}` : '',
+    'Thank you for shopping with Wine Cellar.'
+  ].filter(Boolean);
+
+  return { html, text: plainTextLines.join('\n') };
+}
 
 function computeTotals(items, opts = {}) {
   const { isTradeCustomer = false, shippingOverride } = opts;
@@ -119,188 +213,82 @@ const { requireAuth, optionalAuth } = require('./userAuth');
 router.post('/api/orders/create', optionalAuth, async (req, res) => {
   try {
     const {
-      customer,
-      shippingAddress,
-      billingDetails: billingDetailsRaw,
-      pickupStore: pickupStoreRaw,
-      items = [],
-      trackingCode,
-      isTradeCustomer = false,
-      shippingOverride,
-    } = req.body || {};
-    if (!customer || !customer.email) {
-      return res.status(400).json({ error: 'customer.email is required' });
-    }
-    // Detect Pick & Pay
-    const m = String((req.body && req.body.method) || '').toLowerCase();
-    const isPickAndPay = PICK_AND_PAY_METHODS.has(m);
-    const billingDetails = sanitizeBillingDetails(billingDetailsRaw);
-    const pickupStore = normalizePickupStore(pickupStoreRaw);
-    const shippingAddressPayload = isPickAndPay
-      ? buildPickAndPayShippingAddress(pickupStoreRaw, shippingAddress) || shippingAddress || null
-      : shippingAddress;
-    let { subtotal, discount, vat, shippingFee, total, isTradeCustomer: isTrade } = computeTotals(items, { isTradeCustomer, shippingOverride });
-    if (isPickAndPay) {
-      shippingFee = 0;
-      total = round2(subtotal - discount + vat + shippingFee);
-    }
-    const userPayload = { sub: req.userId }; // cookie auth
-    // ETA: +2 business days
-    const eta = (() => {
-      const d = new Date();
-      let add = 2; while (add > 0) { d.setDate(d.getDate()+1); const w=d.getDay(); if (w!==0 && w!==6) add--; }
-      return d;
-    })();
-    const order = new OrderDetails({
-      method: m,
-      paymentMethod: m,
-      customer,
-      billingDetails,
-      shippingAddress: shippingAddressPayload,
-      pickupStore,
-      items,
+      customerEmail,
+      customerName,
+      paymentMethod,
+      orderItems,
       subtotal,
-      discount,
-      vat,
-      shippingFee,
+      tax,
       total,
-      trackingCode,
-      isTradeCustomer: isTrade,
-      estimatedDelivery: eta,
+      shopLocation,
+    } = req.body || {};
+
+    if (!customerEmail || typeof customerEmail !== 'string') {
+      return res.status(400).json({ error: 'customerEmail is required' });
+    }
+    if (!customerName || typeof customerName !== 'string') {
+      return res.status(400).json({ error: 'customerName is required' });
+    }
+
+    const normalizedPaymentMethod = normalizePaymentMethod(paymentMethod);
+    if (!normalizedPaymentMethod) {
+      return res.status(400).json({ error: 'paymentMethod must be one of Debit Card | Credit Card | PayPal | Pick & Pay' });
+    }
+
+    const normalizedItems = normalizeOrderItems(orderItems);
+    if (!normalizedItems.length) {
+      return res.status(400).json({ error: 'orderItems must include at least one item with qty and price' });
+    }
+
+    const subtotalValue = Number(subtotal);
+    const taxValue = Number(tax);
+    const totalValue = Number(total);
+    if (![subtotalValue, taxValue, totalValue].every(n => Number.isFinite(n) && n >= 0)) {
+      return res.status(400).json({ error: 'subtotal, tax, total must be non-negative numbers' });
+    }
+
+    const orderId = generateOrderId();
+    const orderDoc = new OrderDetails({
+      trackingCode: orderId,
+      method: normalizedPaymentMethod.toLowerCase(),
+      paymentMethod: normalizedPaymentMethod,
+      customer: {
+        name: customerName,
+        email: customerEmail,
+      },
+      items: normalizedItems,
+      subtotal: subtotalValue,
+      vat: taxValue,
+      total: totalValue,
+      pickupStore: shopLocation ? { storeName: shopLocation } : undefined,
+      shippingFee: 0,
     });
-    if (userPayload && userPayload.sub) order.user_id = userPayload.sub;
-    initializeOrderMetadata(order);
-    await order.save();
+    initializeOrderMetadata(orderDoc);
+    await orderDoc.save();
 
-    // fire-and-forget emails (owner + customer receipt)
-    emailOwnerOrderPlaced(order).catch(()=>{});
-    const etaEmail = order.estimatedDelivery;
+    emailOwnerOrderPlaced(orderDoc).catch(() => {});
+    const { html, text } = buildOrderEmail({
+      orderId,
+      customerName,
+      paymentMethod: normalizedPaymentMethod,
+      orderItems: normalizedItems,
+      subtotal: subtotalValue,
+      tax: taxValue,
+      total: totalValue,
+      shopLocation,
+    });
+
     try {
-      const brand = '#350008';
-      const billing = order.billingDetails || {};
-      const pickup = order.pickupStore || null;
-      const recipientEmail = billing.email || (customer && customer.email);
-      if (recipientEmail) {
-        const itemsRows = (items || []).map(it => {
-          const itemName = it.name || it.name0 || it.ProductName || it.title || it.productName || it.SKU || it.sku || 'Item';
-          const qty = Number(it.qty || 0);
-          const price = Number(it.price || 0);
-          return `
-          <tr>
-            <td style="padding:8px;border:1px solid #eee"><strong>${itemName}</strong></td>
-            <td style="padding:8px;border:1px solid #eee;text-align:center"><strong>x${qty}</strong></td>
-            <td style="padding:8px;border:1px solid #eee;text-align:right">£${price.toFixed(2)}</td>
-          </tr>`;
-        }).join('');
-        const totalsHtml = `
-          <tr><td colspan="2" style="padding:8px;text-align:right;border:1px solid #eee">Subtotal</td><td style="padding:8px;text-align:right;border:1px solid #eee">£${subtotal.toFixed(2)}</td></tr>
-          <tr><td colspan="2" style="padding:8px;text-align:right;border:1px solid #eee">Discount</td><td style="padding:8px;text-align:right;border:1px solid #eee">£${discount.toFixed(2)}</td></tr>
-          <tr><td colspan="2" style="padding:8px;text-align:right;border:1px solid #eee">VAT</td><td style="padding:8px;text-align:right;border:1px solid #eee">£${vat.toFixed(2)}</td></tr>
-          <tr><td colspan="2" style="padding:8px;text-align:right;border:1px solid #eee">Shipping</td><td style="padding:8px;text-align:right;border:1px solid #eee">£${shippingFee.toFixed(2)}</td></tr>
-          <tr><td colspan="2" style="padding:8px;text-align:right;border:1px solid #eee;font-weight:bold">Total ${isPickAndPay ? 'Due at Pickup' : 'Paid'}</td><td style="padding:8px;text-align:right;border:1px solid #eee;font-weight:bold">£${total.toFixed(2)}</td></tr>`;
-        const trackUrl = `${(req.headers.origin || 'https://winecellar.co.in')}/order-status?trackingCode=${order.trackingCode}`;
-        const paymentLabels = {
-          cod: 'Pick and Pay (pay at the store)',
-          pick_and_pay: 'Pick and Pay (pay at the store)',
-          pickup: 'Pick and Pay (pay at the store)',
-          paypal: 'PayPal',
-          credit_card: 'Credit Card',
-          card: 'Card',
-          debit_card: 'Debit Card'
-        };
-        const paymentLabel = paymentLabels[m] || (m ? m.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) : 'Online payment');
-        const fullName = `${billing.firstName || ''} ${billing.lastName || ''}`.trim() || customer.name || 'Customer';
-        const billingLines = [
-          fullName && `<strong>Name:</strong> ${fullName}`,
-          billing.email && `<strong>Email:</strong> ${billing.email}`,
-          billing.phone && `<strong>Phone:</strong> ${billing.phone}`,
-          billing.address && `<strong>Address:</strong> ${billing.address}`,
-          billing.postcode && `<strong>Postcode:</strong> ${billing.postcode}`
-        ].filter(Boolean).join('<br/>');
-        const pickupLines = pickup ? [
-          pickup.storeName && `<strong>Store:</strong> ${pickup.storeName}`,
-          pickup.addressLine1 && `${pickup.addressLine1}`,
-          pickup.addressLine2 && `${pickup.addressLine2}`,
-          (pickup.city || pickup.state || pickup.postcode) && [pickup.city, pickup.state, pickup.postcode].filter(Boolean).join(', '),
-          pickup.phone && `Contact: ${pickup.phone}`
-        ].filter(Boolean).join('<br/>') : '';
-        const deliveryLines = !isPickAndPay ? (() => {
-          const addr = order.shippingAddress || {};
-          const parts = [addr.line1 || addr.addressLine1, addr.line2 || addr.addressLine2, addr.city, addr.state, addr.postcode, addr.country].filter(Boolean);
-          return parts.length ? parts.join('<br/>') : '';
-        })() : '';
-
-        const html = `
-        <div style="font-family:Arial,sans-serif;max-width:640px;margin:auto;border:1px solid #eee">
-          <div style="background:${brand};color:#fff;padding:16px 20px;font-size:18px;font-weight:600">Wine Cellar</div>
-          <div style="padding:20px">
-            <p style="margin:0 0 12px 0">Dear ${fullName},</p>
-            <p style="margin:0 0 16px 0">Thank you for placing an order with Wine Cellar. We appreciate your patronage—visit us soon!</p>
-            <p style="margin:0 0 16px 0">Your order <strong>${order.trackingCode}</strong> has been received.</p>
-            <p style="margin:0 0 16px 0"><strong>Payment method:</strong> ${paymentLabel}</p>
-            <table style="border-collapse:collapse;width:100%;margin:10px 0">
-              <thead>
-                <tr>
-                  <th style="padding:8px;border:1px solid #eee;text-align:left">Item</th>
-                  <th style="padding:8px;border:1px solid #eee;text-align:center">Qty</th>
-                  <th style="padding:8px;border:1px solid #eee;text-align:right">Price</th>
-                </tr>
-              </thead>
-              <tbody>${itemsRows}</tbody>
-              <tfoot>${totalsHtml}</tfoot>
-            </table>
-            ${billingLines ? `<p style="margin:16px 0 0 0"><strong>Billing details</strong><br/>${billingLines}</p>` : ''}
-            ${pickupLines ? `<p style="margin:16px 0 0 0"><strong>Store pickup</strong><br/>${pickupLines}</p>` : ''}
-            ${deliveryLines ? `<p style="margin:16px 0 0 0"><strong>Delivery address</strong><br/>${deliveryLines}</p>` : ''}
-            <p style="margin:16px 0 0 0">Estimated delivery: <strong>${etaEmail.toDateString()}</strong></p>
-            <p style="margin:12px 0 0 0">Track your order: <a href="${trackUrl}">${trackUrl}</a></p>
-            <p style="margin:16px 0 0 0">Warm regards,<br/>Wine Cellar Team</p>
-          </div>
-        </div>`;
-        const plainTextSections = [
-          `Dear ${fullName},`,
-          'Thank you for placing an order with Wine Cellar. We appreciate your patronage—visit us soon!',
-          `Your order ${order.trackingCode} has been received.`,
-          `Payment method: ${paymentLabel}`,
-          'Items:',
-          ...((items || []).map(it => ` - ${(it.name || it.title || it.productName || it.SKU || 'Item')} x${Number(it.qty || 0)} (£${Number(it.price || 0).toFixed(2)})`)),
-          `Subtotal: £${subtotal.toFixed(2)}`,
-          `Discount: £${discount.toFixed(2)}`,
-          `VAT: £${vat.toFixed(2)}`,
-          `Shipping: £${shippingFee.toFixed(2)}`,
-          `Total ${isPickAndPay ? 'Due at Pickup' : 'Paid'}: £${total.toFixed(2)}`,
-          billingLines ? `Billing details:\n${billingLines.replace(/<br\/>/g, '\n').replace(/<strong>|<\/strong>/g, '')}` : '',
-          pickupLines ? `Store pickup:\n${pickupLines.replace(/<br\/>/g, '\n').replace(/<strong>|<\/strong>/g, '')}` : '',
-          deliveryLines ? `Delivery address:\n${deliveryLines.replace(/<br\/>/g, '\n')}` : '',
-          `Estimated delivery: ${etaEmail.toDateString()}`,
-          `Track your order: ${trackUrl}`,
-          'Warm regards,',
-          'Wine Cellar Team'
-        ].filter(Boolean);
-        const plainText = plainTextSections.join('\n\n');
-        // Send email; do not throw if fails
-        sendMail(recipientEmail, 'Thank you for placing an order with Wine Cellar', plainText, html).catch(err => {
-          console.error('email receipt failed:', { orderId: String(order._id), email: recipientEmail, error: err.message });
-        });
-      }
-    } catch (err) {
-      console.error('email build/send error:', err.message);
+      await sendMail(customerEmail, 'Thank you for placing an order', text, html);
+    } catch (emailError) {
+      console.error('Transactional email failed:', emailError.message);
+      return res.status(502).json({ success: false, orderId, error: 'EMAIL_FAILED', message: 'Order saved but confirmation email could not be sent. Please contact support if you do not receive an email.' });
     }
 
-    // Automatically create UPS shipment for delivery orders (not Pick & Pay)
-    if (!isPickAndPay) {
-      try {
-        await createShipmentForOrder(order._id);
-        console.log(`UPS shipment created for order ${order.trackingCode}`);
-      } catch (upsError) {
-        console.error(`UPS shipment failed for order ${order.trackingCode}:`, upsError.message);
-        // Don't fail the order creation if UPS fails - admin can create shipment manually later
-      }
-    }
-
-    res.json({ _id: order._id, trackingCode: order.trackingCode, status: order.status, subtotal, discount, vat, shippingFee, total });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
+    return res.json({ success: true, orderId });
+  } catch (err) {
+    console.error('order creation failed:', err);
+    return res.status(500).json({ error: 'INTERNAL_ERROR' });
   }
 });
 
