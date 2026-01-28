@@ -16,6 +16,26 @@ function normalizeSizeStocks(sizeStocks = {}) {
   return normalized;
 }
 
+function extractSizeStocksFromBody(body = {}) {
+  const extracted = {};
+  if (!body || typeof body !== 'object') {
+    return extracted;
+  }
+
+  for (const [key, value] of Object.entries(body)) {
+    const bracketMatch = key.match(/^sizeStocks\[([^\]]+)\]$/);
+    const dotMatch = key.match(/^sizeStocks\.([^\.]+)$/);
+    const rawSize = bracketMatch?.[1] || dotMatch?.[1];
+    if (!rawSize) {
+      continue;
+    }
+    const normalizedKey = normalizeSizeKey(rawSize);
+    extracted[normalizedKey] = value;
+  }
+
+  return extracted;
+}
+
 function parseJsonMaybe(value) {
   if (value === undefined || value === null) {
     return value;
@@ -227,6 +247,7 @@ function normalizeTagsInput(raw) {
 }
 
 function buildProductPayloadFromBody(body = {}) {
+  const extractedSizeStocks = extractSizeStocksFromBody(body);
   const payload = {
     name: body.name,
     desc: body.desc,
@@ -250,8 +271,10 @@ function buildProductPayloadFromBody(body = {}) {
   }
 
   // Handle sizeStocks if provided (multipart may send as JSON string)
-  if (body.sizeStocks !== undefined) {
-    const validation = validateSizeStocks(body.sizeStocks);
+  const hasExtractedSizeStocks = Object.keys(extractedSizeStocks).length > 0;
+  const sizeStocksInput = body.sizeStocks !== undefined ? body.sizeStocks : (hasExtractedSizeStocks ? extractedSizeStocks : undefined);
+  if (sizeStocksInput !== undefined) {
+    const validation = validateSizeStocks(sizeStocksInput);
     if (!validation.valid) {
       throw new Error(validation.error);
     }
@@ -416,6 +439,12 @@ const adminUpdateProductStock = async (req, res) => {
   try {
     const id = req.params.id;
     let { stock, delta, sizeStocks } = req.body || {};
+    if (sizeStocks === undefined) {
+      const extracted = extractSizeStocksFromBody(req.body || {});
+      if (Object.keys(extracted).length > 0) {
+        sizeStocks = extracted;
+      }
+    }
 
     const product = await Product.findById(id);
     if (!product) return res.status(404).json({ error: 'Not found' });
@@ -431,6 +460,7 @@ const adminUpdateProductStock = async (req, res) => {
       const currentSizeStocks = normalizeSizeStocks(product.sizeStocks?.toObject?.() || {});
       const updatedSizeStocks = { ...currentSizeStocks, ...validation.normalized };
       product.sizeStocks = updatedSizeStocks;
+      product.stock = computeTotalStock(updatedSizeStocks);
     } else if (delta !== undefined) {
       const next = Number(product.stock || 0) + Number(delta);
       product.stock = Math.max(0, Math.floor(next));
