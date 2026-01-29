@@ -1,4 +1,5 @@
 const nodemailer = require('nodemailer');
+const { Resend } = require('resend');
 
 function envTrim(key) {
   const v = process.env[key];
@@ -28,11 +29,35 @@ function buildTransport() {
 
 const transporter = buildTransport();
 
+const resendApiKey = envTrim('RESEND_API_KEY');
+const resendClient = resendApiKey ? new Resend(resendApiKey) : null;
+
 function getFromAddress() {
   return envTrim('EMAIL_FROM') || envTrim('SMTP_FROM') || envTrim('EMAIL_USER') || envTrim('SMTP_USER') || envTrim('GMAIL_USER') || envTrim('EMAIL');
 }
 
+function getEmailProvider() {
+  return resendClient ? 'resend' : 'gmail';
+}
+
 function sendMail(to, subject, text, html) {
+  if (resendClient) {
+    const payload = {
+      from: getFromAddress(),
+      to: [to],
+      subject,
+      ...(text ? { text } : {}),
+      ...(html ? { html } : {}),
+    };
+    return resendClient.emails.send(payload).then((info) => {
+      console.log('Email sent:', info);
+      return info;
+    }).catch((error) => {
+      console.error('Error sending email:', error);
+      throw error;
+    });
+  }
+
   const mailOptions = {
     from: getFromAddress(),
     to,
@@ -54,4 +79,4 @@ function sendMail(to, subject, text, html) {
   });
 }
 
-module.exports = { sendMail };
+module.exports = { sendMail, getEmailProvider };

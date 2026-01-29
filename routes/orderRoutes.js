@@ -3,7 +3,7 @@ const router = express.Router();
 const { getOrder, updateOrderStatus, trackOrder, initializeOrderMetadata, emailOwnerOrderPlaced, createShipmentForOrder } = require('../controllers/orderController');
 const { requireAdmin } = require('../config/requireAdmin');
 const { decodeUserFromAuthHeader } = require('../config/requireUser');
-const { sendMail } = require('../services/emailService');
+const { sendMail, getEmailProvider } = require('../services/emailService');
 const OrderDetails = require('../models/orderDetails');
 
 const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
@@ -337,7 +337,7 @@ router.post('/api/orders/create', optionalAuth, async (req, res) => {
       billingDetails: sanitizedBillingDetails,
       pickupStore: normalizedPickupStore,
       shippingFee: 0,
-      emailProvider: 'gmail',
+      emailProvider: getEmailProvider(),
     });
     initializeOrderMetadata(orderDoc);
     await orderDoc.save();
