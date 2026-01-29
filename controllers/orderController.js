@@ -106,9 +106,22 @@ async function createShipmentForOrder(orderId) {
   return order;
 }
 
+const OWNER_EMAIL = process.env.ORDER_ALERT_EMAIL || process.env.WINECELLAR_OWNER_EMAIL || 'winecellarcustomerservice@gmail.com';
+
 async function emailOwnerOrderPlaced(order) {
   try {
-    const to = 'winecellarcustomerservice@gmail.com';
+    if (!OWNER_EMAIL) {
+      console.warn('ORDER_ALERT_EMAIL not configured; skipping owner notification.');
+      return;
+    }
+    const customerEmail = order?.customer?.email;
+    if (customerEmail && customerEmail.toLowerCase() === OWNER_EMAIL.toLowerCase()) {
+      // Avoid emailing the customer with the internal alert if they used the owner email address.
+      console.warn('Skipping owner notification because customer email matches owner email.');
+      return;
+    }
+    const to = OWNER_EMAIL;
+
     const subject = `New Order: ${order.trackingCode} (£${Number(order.total).toFixed(2)})`;
     const itemsText = (order.items || [])
       .map(it => {
