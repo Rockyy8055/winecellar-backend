@@ -2,7 +2,6 @@ const express = require('express');
 const router = express.Router();
 const { getOrder, updateOrderStatus, trackOrder, initializeOrderMetadata, emailOwnerOrderPlaced, createShipmentForOrder } = require('../controllers/orderController');
 const { requireAdmin } = require('../config/requireAdmin');
-const { decodeUserFromAuthHeader } = require('../config/requireUser');
 const { sendMail, getEmailProvider } = require('../services/emailService');
 const OrderDetails = require('../models/orderDetails');
 
@@ -42,6 +41,30 @@ function normalizeOrderItems(orderItems) {
       return acc;
     }
     acc.push({ name, qty, price });
+
+router.get('/api/my-orders', requireAuth, async (req, res) => {
+  try {
+    const orders = await OrderDetails.find({ user_id: req.user._id })
+      .sort({ created_at: -1 })
+      .lean();
+
+    const formatted = orders.map((order) => ({
+      id: String(order._id),
+      trackingCode: order.trackingCode,
+      status: order.status,
+      createdAt: order.created_at,
+      total: order.total,
+      paymentMethod: order.paymentMethod,
+      items: order.items,
+      pickupStore: order.pickupStore,
+      shippingAddress: order.shippingAddress,
+    }));
+
+    return res.json({ orders: formatted });
+  } catch (err) {
+    return res.status(500).json({ error: 'FAILED_TO_FETCH_ORDERS' });
+  }
+});
     return acc;
   }, []);
 }
@@ -263,8 +286,9 @@ function serializeOrderForAdmin(doc) {
 // Create order (simple)
 const { requireAuth, optionalAuth } = require('./userAuth');
 
-router.post('/api/orders/create', optionalAuth, async (req, res) => {
+router.post('/api/orders/create', requireAuth, async (req, res) => {
   try {
+    const userId = req.user?._id;
     const extracted = extractOrderPayload(req.body);
     const {
       customerEmail,
@@ -296,11 +320,14 @@ router.post('/api/orders/create', optionalAuth, async (req, res) => {
     if (paymentReference) {
       const existing = await OrderDetails.findOne({ paymentReference: String(paymentReference) });
       if (existing) {
-        return res.json({
-          orderId: existing.trackingCode || String(existing._id),
-          trackingCode: existing.trackingCode || String(existing._id),
-          emailSent: !!existing.emailSent,
-        });
+        if (!existing.user_id || (userId && String(existing.user_id) === String(userId))) {
+          return res.json({
+            orderId: existing.trackingCode || String(existing._id),
+            trackingCode: existing.trackingCode || String(existing._id),
+            emailSent: !!existing.emailSent,
+          });
+        }
+        return res.status(403).json({ error: 'ORDER_CONFLICT', message: 'Another account has already registered this payment reference.' });
       }
     }
 
@@ -326,6 +353,7 @@ router.post('/api/orders/create', optionalAuth, async (req, res) => {
       method: normalizedPaymentMethod.toLowerCase(),
       paymentMethod: normalizedPaymentMethod,
       paymentReference: paymentReference ? String(paymentReference) : undefined,
+      user_id: userId,
       customer: {
         name: customerName,
         email: customerEmail,
@@ -392,9 +420,8 @@ router.get('/api/orders/track/:trackingCode', optionalAuth, async (req, res) => 
     const code = req.params.trackingCode;
     const order = await OrderDetails.findOne({ trackingCode: code });
     if (!order) return res.status(404).json({ message: 'Order not found' });
-    const cookieUserId = req.userId || null;
-    const bearer = decodeUserFromAuthHeader(req);
-    const isOwner = (cookieUserId && String(cookieUserId) === String(order.user_id || '')) || (bearer && String(bearer.sub) === String(order.user_id || ''));
+    const sessionUserId = req.user?._id ? String(req.user._id) : null;
+    const isOwner = sessionUserId && String(order.user_id || '') === sessionUserId;
     if (isOwner) {
       return res.json({
         trackingCode: order.trackingCode,
@@ -439,8 +466,8 @@ router.post('/api/orders/cancel/:trackingCode', optionalAuth, async (req, res) =
     }
 
     // If cookie user exists, the order must belong to them; otherwise, behave as public cancel window
-    if (req.userId) {
-      if (String(order.user_id || '') !== String(req.userId)) {
+    if (req.user?._id) {
+      if (String(order.user_id || '') !== String(req.user._id)) {
         // Hide existence to non-owners
         return res.status(404).json({ message: 'Order not found' });
       }
@@ -461,7 +488,7 @@ router.post('/api/orders/cancel/:trackingCode', optionalAuth, async (req, res) =
 
     console.log('order cancellation', {
       trackingCode: order.trackingCode,
-      userId: req.userId || null,
+      userId: req.user?._id || null,
       ip,
       ua,
       at: new Date().toISOString(),

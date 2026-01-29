@@ -34,13 +34,23 @@ app.options('*', cors(corsOptions));
 connectDB();
 app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(specs)); // Serve Swagger docs
 
-app.use(adminAuthRoutes);
-// Cookie auth routes (signup/login/me/logout)
+let cookieAuthRouter;
+let attachUser;
 try {
-  const { router: cookieAuthRouter } = require('./routes/userAuth');
-  app.use(cookieAuthRouter);
+  const userAuthModule = require('./routes/userAuth');
+  cookieAuthRouter = userAuthModule.router;
+  attachUser = userAuthModule.attachUser;
 } catch (_) {
   // fallback to legacy routes
+}
+
+if (attachUser) {
+  app.use(attachUser);
+}
+
+app.use(adminAuthRoutes);
+if (cookieAuthRouter) {
+  app.use(cookieAuthRouter);
 }
 app.use(userRoutes);
 app.use(productCategoryRoutes);

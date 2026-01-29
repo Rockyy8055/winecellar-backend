@@ -1,17 +1,46 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const cookieParser = require('cookie-parser');
 const User = require('../models/user');
 const { requireAdmin } = require('../config/requireAdmin');
 const { buildCookieOptions } = require('../config/cookieOptions');
 
 const router = express.Router();
-const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret';
-const COOKIE_NAME = 'auth_session';
-const COOKIE_MAX_AGE = 7 * 24 * 60 * 60 * 1000;
 
-router.use(cookieParser());
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET) {
+  const msg = 'JWT_SECRET environment variable is required for authentication.';
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error(msg);
+  } else {
+    console.warn(msg + ' Authentication will not work correctly until it is set.');
+  }
+}
+
+const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '7d';
+const COOKIE_NAME = process.env.AUTH_COOKIE_NAME || 'auth_session';
+
+const UNIT_TO_MS = {
+  ms: 1,
+  s: 1000,
+  m: 60 * 1000,
+  h: 60 * 60 * 1000,
+  d: 24 * 60 * 60 * 1000,
+};
+
+function parseDurationMs(value, fallbackMs) {
+  if (!value) return fallbackMs;
+  if (!Number.isNaN(Number(value))) {
+    return Number(value);
+  }
+  const match = /^\s*(\d+)\s*(ms|s|m|h|d)\s*$/i.exec(value);
+  if (!match) return fallbackMs;
+  const amount = Number(match[1]);
+  const unit = match[2].toLowerCase();
+  return amount * (UNIT_TO_MS[unit] || 1);
+}
+
+const COOKIE_MAX_AGE = parseDurationMs(JWT_EXPIRES_IN, 7 * 24 * 60 * 60 * 1000);
 
 function setAuthCookie(res, token) {
   res.cookie(COOKIE_NAME, token, {
@@ -31,7 +60,10 @@ function clearAuthCookie(res) {
 }
 
 function createSessionToken(userId) {
-  return jwt.sign({ userId: String(userId) }, JWT_SECRET, { expiresIn: '7d' });
+  if (!JWT_SECRET) {
+    throw new Error('JWT_SECRET is not configured.');
+  }
+  return jwt.sign({ userId: String(userId) }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
 }
 
 function normalizeEmail(email) {
@@ -42,32 +74,66 @@ function sendAuthRequired(res) {
   return res.status(401).json({ message: 'Not authenticated' });
 }
 
-function requireAuth(req, res, next) {
+async function resolveUserFromCookie(req, res) {
+  if (req._authResolved) return;
+  req._authResolved = true;
+  req.userId = null;
+  req.user = null;
+
+  const token = req.cookies && req.cookies[COOKIE_NAME];
+  if (!token || !JWT_SECRET) {
+    return;
+  }
+
   try {
-    const token = req.cookies && req.cookies[COOKIE_NAME];
-    if (!token) return sendAuthRequired(res);
     const payload = jwt.verify(token, JWT_SECRET);
+    if (!payload || !payload.userId) {
+      return;
+    }
     req.userId = payload.userId;
-    next();
-  } catch (_) {
-    return sendAuthRequired(res);
+    const userDoc = await User.findById(payload.userId).lean();
+    if (!userDoc) {
+      req.userId = null;
+      clearAuthCookie(res);
+      return;
+    }
+    req.user = {
+      _id: String(userDoc._id),
+      name: userDoc.name,
+      email: userDoc.email,
+      phone: userDoc.phone || null,
+      status: userDoc.status || null,
+    };
+  } catch (err) {
+    req.userId = null;
+    req.user = null;
+    clearAuthCookie(res);
+    if (process.env.NODE_ENV !== 'production') {
+      console.warn('Failed to verify auth token:', err.message);
+    }
   }
 }
 
-// Optional auth: never blocks, just sets req.userId when cookie is valid
-function optionalAuth(req, _res, next) {
+async function attachUser(req, res, next) {
   try {
-    const token = req.cookies && req.cookies[COOKIE_NAME];
-    if (token) {
-      const payload = jwt.verify(token, JWT_SECRET);
-      req.userId = payload.userId;
-    } else {
-      req.userId = null;
-    }
-  } catch (_) {
-    req.userId = null;
+    await resolveUserFromCookie(req, res);
+  } catch (err) {
+    console.error('attachUser error:', err);
   }
   next();
+}
+
+async function requireAuth(req, res, next) {
+  await resolveUserFromCookie(req, res);
+  if (!req.userId) {
+    return sendAuthRequired(res);
+  }
+  return next();
+}
+
+async function optionalAuth(req, res, next) {
+  await resolveUserFromCookie(req, res);
+  return next();
 }
 
 function toPublicUser(user) {
@@ -133,16 +199,11 @@ router.post('/api/auth/login', async (req, res) => {
 
 // GET /api/auth/me
 router.get('/api/auth/me', optionalAuth, async (req, res) => {
-  if (!req.userId) {
+  if (!req.user) {
     return res.status(200).json({ message: 'Not authenticated.', user: null });
   }
 
-  const user = await User.findById(req.userId);
-  if (!user) {
-    return res.status(200).json({ message: 'Not authenticated.', user: null });
-  }
-
-  return res.status(200).json({ message: 'Authenticated.', user: toPublicUser(user) });
+  return res.status(200).json({ message: 'Authenticated.', user: req.user });
 });
 
 // POST /api/auth/logout
@@ -215,4 +276,4 @@ router.get('/api/admin/users', requireAdmin, async (req, res) => {
   }
 });
 
-module.exports = { router, requireAuth, optionalAuth };
+module.exports = { router, requireAuth, optionalAuth, attachUser };

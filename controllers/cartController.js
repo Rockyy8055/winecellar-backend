@@ -11,7 +11,7 @@ const {
 const addToCart = async (req, res) => {
   try {
     const { productId, quantity = 1, size } = req.body || {};
-    const userId = req.user?.userId; // From auth middleware
+    const userId = req.user?._id;
 
     if (!productId) {
       return res.status(400).json({ error: 'Product ID is required' });
@@ -98,7 +98,7 @@ const addToCart = async (req, res) => {
 // Get cart items
 const getCart = async (req, res) => {
   try {
-    const userId = req.user?.userId;
+    const userId = req.user?._id;
     
     const session = await ShoppingSession.findOne({ user_id: userId });
     if (!session) {
@@ -138,7 +138,7 @@ const updateCartItem = async (req, res) => {
   try {
     const { itemId } = req.params;
     const { quantity } = req.body;
-    const userId = req.user?.userId;
+    const userId = req.user?._id;
 
     if (quantity < 0) {
       return res.status(400).json({ error: 'Quantity cannot be negative' });
@@ -198,7 +198,7 @@ const updateCartItem = async (req, res) => {
 const removeFromCart = async (req, res) => {
   try {
     const { itemId } = req.params;
-    const userId = req.user?.userId;
+    const userId = req.user?._id;
 
     const cartItem = await CartItem.findById(itemId);
     if (!cartItem) {
@@ -223,7 +223,7 @@ const removeFromCart = async (req, res) => {
 // Clear cart
 const clearCart = async (req, res) => {
   try {
-    const userId = req.user?.userId;
+    const userId = req.user?._id;
     
     const session = await ShoppingSession.findOne({ user_id: userId });
     if (session) {
