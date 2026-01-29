@@ -1,5 +1,6 @@
 const nodemailer = require('nodemailer');
 const { Resend } = require('resend');
+const { google } = require('googleapis');
 
 function envTrim(key) {
   const v = process.env[key];
@@ -32,15 +33,56 @@ const transporter = buildTransport();
 const resendApiKey = envTrim('RESEND_API_KEY');
 const resendClient = resendApiKey ? new Resend(resendApiKey) : null;
 
+const gmailOAuth = (() => {
+  const clientId = envTrim('GOOGLE_OAUTH_CLIENT_ID');
+  const clientSecret = envTrim('GOOGLE_OAUTH_CLIENT_SECRET');
+  const refreshToken = envTrim('GOOGLE_OAUTH_REFRESH_TOKEN');
+  if (!clientId || !clientSecret || !refreshToken) return null;
+  const oauth2Client = new google.auth.OAuth2(clientId, clientSecret);
+  oauth2Client.setCredentials({ refresh_token: refreshToken });
+  return { oauth2Client, email: envTrim('GOOGLE_OAUTH_EMAIL') };
+})();
+
+const gmailClient = gmailOAuth ? google.gmail({ version: 'v1', auth: gmailOAuth.oauth2Client }) : null;
+
 function getFromAddress() {
   return envTrim('EMAIL_FROM') || envTrim('SMTP_FROM') || envTrim('EMAIL_USER') || envTrim('SMTP_USER') || envTrim('GMAIL_USER') || envTrim('EMAIL');
 }
 
 function getEmailProvider() {
-  return resendClient ? 'resend' : 'gmail';
+  if (gmailClient) return 'gmail-api';
+  if (resendClient) return 'resend';
+  return 'gmail';
 }
 
 function sendMail(to, subject, text, html) {
+  if (gmailClient) {
+    const makeBody = (to, from, subject, text, html) => {
+      const str = [
+        `To: ${to}`,
+        `From: ${from}`,
+        `Subject: ${subject}`,
+        'MIME-Version: 1.0',
+        'Content-Type: text/html; charset=utf-8',
+        '',
+        html || text || ''
+      ].join('\n');
+      return Buffer.from(str).toString('base64').replace(/\+/g, '-').replace(/\//g, '_');
+    };
+    const from = gmailOAuth.email || envTrim('EMAIL_FROM') || envTrim('EMAIL_USER');
+    const raw = makeBody(to, from, subject, text, html);
+    return gmailClient.users.messages.send({
+      userId: 'me',
+      requestBody: { raw }
+    }).then((result) => {
+      console.log('Email sent via Gmail API:', result.data);
+      return result.data;
+    }).catch((error) => {
+      console.error('Gmail API send error:', error);
+      throw error;
+    });
+  }
+
   if (resendClient) {
     const payload = {
       from: getFromAddress(),
