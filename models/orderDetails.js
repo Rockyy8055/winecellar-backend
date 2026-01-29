@@ -49,6 +49,17 @@ const orderDetailsSchema = new mongoose.Schema({
     ref: "User",
     required: false,
   },
+  paymentReference: {
+    type: String,
+    index: true,
+  },
+  emailSent: {
+    type: Boolean,
+    default: false,
+  },
+  emailProvider: {
+    type: String,
+  },
   customer: {
     name: { type: String },
     email: { type: String },
@@ -123,6 +134,7 @@ const orderDetailsSchema = new mongoose.Schema({
 // Indexes for efficient lookups
 orderDetailsSchema.index({ trackingCode: 1 }, { unique: true, sparse: true });
 orderDetailsSchema.index({ user_id: 1 });
+orderDetailsSchema.index({ paymentReference: 1 }, { unique: true, sparse: true });
 
 const OrderDetails = mongoose.model("OrderDetails", orderDetailsSchema);
 module.exports = OrderDetails;

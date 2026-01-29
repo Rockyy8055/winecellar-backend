@@ -55,6 +55,10 @@ function extractOrderPayload(body = {}) {
   const taxRaw = body.tax ?? body.vat ?? body.taxAmount;
   const totalRaw = body.total ?? body.totalAmount ?? body.amountPaid;
   const shopLocation = body.shopLocation || body.pickupStore?.storeName || body.storeLocation;
+  const billingDetails = body.billingDetails || null;
+  const pickupDetails = body.pickupDetails || null;
+  const pickupStore = body.pickupStore || null;
+  const paymentReference = body.paymentReference || body.payment_reference || body.paymentId || body.payment_id || body.orderId || body.orderID || null;
 
   return {
     customerEmail,
@@ -65,11 +69,32 @@ function extractOrderPayload(body = {}) {
     tax: taxRaw,
     total: totalRaw,
     shopLocation,
+    billingDetails,
+    pickupDetails,
+    pickupStore,
+    paymentReference,
   };
 }
 
-function buildOrderEmail({ orderId, customerName, paymentMethod, orderItems, subtotal, tax, total, shopLocation }) {
+function buildOrderEmail({ orderId, customerName, paymentMethod, orderItems, subtotal, tax, total, shopLocation, billingDetails, pickupStore, isPickAndPay }) {
   const brand = '#350008';
+  const billing = billingDetails && typeof billingDetails === 'object' ? billingDetails : {};
+  const fullName = `${billing.firstName || ''} ${billing.lastName || ''}`.trim() || customerName || 'Customer';
+  const billingLines = [
+    fullName && `<strong>Name:</strong> ${fullName}`,
+    (billing.email || '') && `<strong>Email:</strong> ${billing.email}`,
+    (billing.phone || '') && `<strong>Phone:</strong> ${billing.phone}`,
+    (billing.address || '') && `<strong>Address:</strong> ${billing.address}`,
+    (billing.postcode || '') && `<strong>Postcode:</strong> ${billing.postcode}`,
+  ].filter(Boolean).join('<br/>');
+  const pickup = pickupStore && typeof pickupStore === 'object' ? pickupStore : null;
+  const pickupLines = pickup ? [
+    pickup.storeName && `<strong>Store:</strong> ${pickup.storeName}`,
+    pickup.addressLine1 && `${pickup.addressLine1}`,
+    pickup.addressLine2 && `${pickup.addressLine2}`,
+    (pickup.city || pickup.postcode || pickup.country) && [pickup.city, pickup.postcode, pickup.country].filter(Boolean).join(', '),
+    pickup.phone && `Contact: ${pickup.phone}`,
+  ].filter(Boolean).join('<br/>') : '';
   const rows = orderItems.map(item => {
     const lineTotal = round2(item.qty * item.price);
     return `
@@ -88,8 +113,8 @@ function buildOrderEmail({ orderId, customerName, paymentMethod, orderItems, sub
     <div style="font-family:Arial,sans-serif;max-width:640px;margin:auto;border:1px solid #eee">
       <div style="background:${brand};color:#fff;padding:16px 20px;font-size:18px;font-weight:600">Wine Cellar</div>
       <div style="padding:20px">
-        <p style="margin:0 0 12px 0">Dear ${customerName || 'Customer'},</p>
-        <p style="margin:0 0 16px 0">Thank you for placing an order with Wine Cellar. This is a transactional confirmation email.</p>
+        <p style="margin:0 0 12px 0">Dear ${fullName},</p>
+        <p style="margin:0 0 16px 0">Thank you for placing an order with Wine Cellar. We appreciate your patronage—visit us soon!</p>
         <p style="margin:0 0 16px 0">Your order <strong>${orderId}</strong> has been received.</p>
         <p style="margin:0 0 16px 0"><strong>Payment method:</strong> ${paymentMethod}</p>
         <table style="border-collapse:collapse;width:100%;margin:10px 0">
@@ -103,7 +128,9 @@ function buildOrderEmail({ orderId, customerName, paymentMethod, orderItems, sub
           <tbody>${rows}</tbody>
           <tfoot>${totals}</tfoot>
         </table>
-        ${shopLocation ? `<p style="margin:16px 0 0 0"><strong>Pickup location:</strong><br/>${shopLocation}</p>` : ''}
+        ${billingLines ? `<p style="margin:16px 0 0 0"><strong>Billing details</strong><br/>${billingLines}</p>` : ''}
+        ${isPickAndPay && (pickupLines || shopLocation) ? `<p style="margin:16px 0 0 0"><strong>Store pickup</strong><br/>${pickupLines || shopLocation}</p>` : ''}
+        ${!isPickAndPay && shopLocation ? `<p style="margin:16px 0 0 0"><strong>Shop:</strong><br/>${shopLocation}</p>` : ''}
         <p style="margin:16px 0 0 0">If you have questions about your order, reply to this email or contact support.</p>
         <p style="margin:16px 0 0 0">Warm regards,<br/>Wine Cellar Team</p>
         <p style="margin:16px 0 0 0;font-size:12px;color:#555">This is an automated transactional email. Please do not reply directly.</p>
@@ -111,8 +138,8 @@ function buildOrderEmail({ orderId, customerName, paymentMethod, orderItems, sub
     </div>`;
 
   const plainTextLines = [
-    `Dear ${customerName || 'Customer'},`,
-    'Thank you for placing an order with Wine Cellar.',
+    `Dear ${fullName},`,
+    'Thank you for placing an order with Wine Cellar. We appreciate your patronage—visit us soon!',
     `Order ID: ${orderId}`,
     `Payment method: ${paymentMethod}`,
     'Items:',
@@ -120,7 +147,9 @@ function buildOrderEmail({ orderId, customerName, paymentMethod, orderItems, sub
     `Subtotal: £${subtotal.toFixed(2)}`,
     `Tax: £${tax.toFixed(2)}`,
     `Total: £${total.toFixed(2)}`,
-    shopLocation ? `Pickup location: ${shopLocation}` : '',
+    billing.address ? `Billing address: ${billing.address}` : '',
+    billing.postcode ? `Billing postcode: ${billing.postcode}` : '',
+    isPickAndPay ? (shopLocation ? `Pickup location: ${shopLocation}` : '') : (shopLocation ? `Shop: ${shopLocation}` : ''),
     'Thank you for shopping with Wine Cellar.'
   ].filter(Boolean);
 
@@ -246,6 +275,9 @@ router.post('/api/orders/create', optionalAuth, async (req, res) => {
       tax,
       total,
       shopLocation,
+      billingDetails,
+      pickupStore,
+      paymentReference,
     } = extracted;
 
     if (!customerEmail || typeof customerEmail !== 'string') {
@@ -258,6 +290,18 @@ router.post('/api/orders/create', optionalAuth, async (req, res) => {
     const normalizedPaymentMethod = normalizePaymentMethod(paymentMethod);
     if (!normalizedPaymentMethod) {
       return res.status(400).json({ error: 'paymentMethod must be one of Debit Card | Credit Card | PayPal | Pick & Pay' });
+    }
+
+    // Idempotency: prevent duplicate emails/orders for the same payment reference
+    if (paymentReference) {
+      const existing = await OrderDetails.findOne({ paymentReference: String(paymentReference) });
+      if (existing) {
+        return res.json({
+          orderId: existing.trackingCode || String(existing._id),
+          trackingCode: existing.trackingCode || String(existing._id),
+          emailSent: !!existing.emailSent,
+        });
+      }
     }
 
     const normalizedItems = normalizeOrderItems(orderItems);
@@ -274,10 +318,14 @@ router.post('/api/orders/create', optionalAuth, async (req, res) => {
     const safeTotal = Number.isFinite(totalValue) && totalValue >= 0 ? totalValue : round2(safeSubtotal + safeTax);
 
     const orderId = generateOrderId();
+    const isPickAndPay = normalizedPaymentMethod === 'Pick & Pay';
+    const sanitizedBillingDetails = sanitizeBillingDetails(billingDetails);
+    const normalizedPickupStore = normalizePickupStore(pickupStore) || (shopLocation ? { storeName: shopLocation } : undefined);
     const orderDoc = new OrderDetails({
       trackingCode: orderId,
       method: normalizedPaymentMethod.toLowerCase(),
       paymentMethod: normalizedPaymentMethod,
+      paymentReference: paymentReference ? String(paymentReference) : undefined,
       customer: {
         name: customerName,
         email: customerEmail,
@@ -286,8 +334,10 @@ router.post('/api/orders/create', optionalAuth, async (req, res) => {
       subtotal: safeSubtotal,
       vat: safeTax,
       total: safeTotal,
-      pickupStore: shopLocation ? { storeName: shopLocation } : undefined,
+      billingDetails: sanitizedBillingDetails,
+      pickupStore: normalizedPickupStore,
       shippingFee: 0,
+      emailProvider: 'gmail',
     });
     initializeOrderMetadata(orderDoc);
     await orderDoc.save();
@@ -302,16 +352,28 @@ router.post('/api/orders/create', optionalAuth, async (req, res) => {
       tax: safeTax,
       total: safeTotal,
       shopLocation,
+      billingDetails: sanitizedBillingDetails,
+      pickupStore: normalizedPickupStore,
+      isPickAndPay,
     });
 
+    let emailSent = false;
     try {
       await sendMail(customerEmail, 'Thank you for placing an order', text, html);
+      emailSent = true;
+      orderDoc.emailSent = true;
+      await orderDoc.save();
     } catch (emailError) {
-      console.error('Transactional email failed:', emailError.message);
-      return res.status(502).json({ success: false, orderId, error: 'EMAIL_FAILED', message: 'Order saved but confirmation email could not be sent. Please contact support if you do not receive an email.' });
+      console.error('Transactional email failed:', emailError && emailError.message ? emailError.message : emailError);
+      orderDoc.emailSent = false;
+      try { await orderDoc.save(); } catch (_) {}
     }
 
-    return res.json({ success: true, orderId, trackingCode: orderId });
+    return res.json({
+      orderId,
+      trackingCode: orderId,
+      emailSent,
+    });
   } catch (err) {
     console.error('order creation failed:', err);
     return res.status(500).json({ error: 'INTERNAL_ERROR' });
