@@ -284,9 +284,9 @@ function serializeOrderForAdmin(doc) {
 }
 
 // Create order (simple)
-const { requireAuth, optionalAuth } = require('./userAuth');
+const { requireAuth, optionalAuth, requireAuthWithMessage } = require('./userAuth');
 
-router.post('/api/orders/create', requireAuth, async (req, res) => {
+router.post('/api/orders/create', requireAuthWithMessage('Authentication required to place orders'), async (req, res) => {
   try {
     const userId = req.user?._id;
     const extracted = extractOrderPayload(req.body);

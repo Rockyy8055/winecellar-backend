@@ -75,22 +75,19 @@ const saveUser = async (req, res) => {
   try {
     // Validate email
     if (!validator.isEmail(email)) {
-      return res.status(400).json({ error: "Invalid email format" });
+      return res.status(400).json({ success: false, message: "Invalid email format" });
     }
 
     // Validate password (example: minimum 8 characters, at least one letter and one number)
     const passwordRegex = /^(?=.*[A-Za-z])(?=.*\d)[A-Za-z\d]{8,}$/;
     if (!passwordRegex.test(password)) {
-      return res.status(400).json({
-        error:
-          "Password must be at least 8 characters long and contain at least one letter and one number",
-      });
+      return res.status(400).json({ success: false, message: "Password must be at least 8 characters and include letters and numbers" });
     }
 
     // Check if a user with the same email already exists
     const existingUser = await User.findOne({ email });
     if (existingUser) {
-      return res.status(400).json({ error: "Email already exists" });
+      return res.status(409).json({ success: false, message: "Email already registered" });
     }
 
     // Hash the password
@@ -109,10 +106,10 @@ const saveUser = async (req, res) => {
 
     const savedUser = await newUser.save();
     console.log("User saved successfully:", savedUser);
-    res.status(200).json({ message: "User saved successfully" });
-  } catch (err) {
-    console.error("Error saving user:", err);
-    res.status(500).json({ error: "Error saving user" });
+    res.status(201).json({ success: true, message: "User created successfully", user: newUser });
+  } catch (error) {
+    console.error("Error saving user:", error);
+    res.status(500).json({ success: false, message: "Error saving user" });
   }
 };
 
@@ -122,19 +119,19 @@ const signInUser = async (req, res) => {
   try {
     // Validate email
     if (!validator.isEmail(email)) {
-      return res.status(400).json({ error: "Invalid email format" });
+      return res.status(400).json({ success: false, message: "Invalid email format" });
     }
 
     // Find the user by email
-    const user = await User.findOne({ email });
+    const user = await User.findOne({ email }).select("+password"); // Ensure the password is selected
     if (!user) {
-      return res.status(400).json({ error: "Invalid email or password" });
+      return res.status(401).json({ success: false, message: "Invalid credentials" });
     }
 
     // Compare the provided password with the stored hashed password
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) {
-      return res.status(400).json({ error: "Invalid email or password" });
+      return res.status(401).json({ success: false, message: "Invalid credentials" });
     }
 
     // Generate tokens
@@ -150,19 +147,22 @@ const signInUser = async (req, res) => {
     await user.save({ timestamps: false });
 
     res.status(200).json({
-      message: "Sign-in successful",
-      accessToken,
-      refreshToken,
+      success: true,
+      message: "Login successful",
       user: {
         id: String(user._id),
-        name: user.name,
         email: user.email,
+        name: user.name,
         phone: user.phone || null,
+      },
+      tokens: {
+        accessToken,
+        refreshToken,
       },
     });
   } catch (err) {
     console.error("Error signing in user:", err);
-    res.status(500).json({ error: "Error signing in user" });
+    res.status(500).json({ success: false, message: "Error signing in user" });
   }
 };
 

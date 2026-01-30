@@ -70,8 +70,8 @@ function normalizeEmail(email) {
   return String(email || '').trim().toLowerCase();
 }
 
-function sendAuthRequired(res) {
-  return res.status(401).json({ message: 'Not authenticated' });
+function sendAuthRequired(res, message = 'Authentication required') {
+  return res.status(401).json({ success: false, message, code: 'AUTH_REQUIRED' });
 }
 
 async function resolveUserFromCookie(req, res) {
@@ -97,13 +97,7 @@ async function resolveUserFromCookie(req, res) {
       clearAuthCookie(res);
       return;
     }
-    req.user = {
-      _id: String(userDoc._id),
-      name: userDoc.name,
-      email: userDoc.email,
-      phone: userDoc.phone || null,
-      status: userDoc.status || null,
-    };
+    req.user = toPublicUser(userDoc);
   } catch (err) {
     req.userId = null;
     req.user = null;
@@ -138,7 +132,25 @@ async function optionalAuth(req, res, next) {
 
 function toPublicUser(user) {
   if (!user) return null;
-  return { id: String(user._id), name: user.name, email: user.email, phone: user.phone || null };
+  const doc = typeof user.toObject === 'function' ? user.toObject() : user;
+  const id = doc._id ? String(doc._id) : doc.id ? String(doc.id) : null;
+  return {
+    id,
+    _id: id,
+    email: doc.email || null,
+    name: doc.name || null,
+    phone: doc.phone || null,
+  };
+}
+
+function requireAuthWithMessage(message) {
+  return async (req, res, next) => {
+    await resolveUserFromCookie(req, res);
+    if (!req.userId) {
+      return sendAuthRequired(res, message);
+    }
+    return next();
+  };
 }
 
 // POST /api/auth/signup
@@ -146,26 +158,28 @@ router.post('/api/auth/signup', async (req, res) => {
   try {
     const { name, phone, email, password, confirmPassword } = req.body || {};
     if (!name || !email || !password || !confirmPassword) {
-      return res.status(400).json({ message: 'name, email, password, and confirmPassword are required.' });
+      return res.status(400).json({ success: false, message: 'name, email, password, and confirmPassword are required.' });
     }
     if (password !== confirmPassword) {
-      return res.status(400).json({ message: 'Passwords do not match.' });
+      return res.status(400).json({ success: false, message: 'Passwords do not match.' });
     }
+
     const normEmail = normalizeEmail(email);
     if (!normEmail) {
-      return res.status(400).json({ message: 'A valid email is required.' });
+      return res.status(400).json({ success: false, message: 'A valid email is required.' });
     }
     const existing = await User.findOne({ email: normEmail });
     if (existing) {
-      return res.status(409).json({ message: 'Email already registered.' });
+      return res.status(409).json({ success: false, message: 'Email already registered.' });
     }
+
     const passwordHash = await bcrypt.hash(password, 12);
     const user = await User.create({ name, phone, email: normEmail, passwordHash });
     const token = createSessionToken(user._id);
     setAuthCookie(res, token);
-    return res.status(201).json({ message: 'Signup successful.', user: toPublicUser(user) });
+    return res.status(201).json({ success: true, message: 'Signup successful.', user: toPublicUser(user) });
   } catch (e) {
-    return res.status(500).json({ message: 'Unable to sign up right now.' });
+    return res.status(500).json({ success: false, message: 'Unable to sign up right now.' });
   }
 });
 
@@ -174,16 +188,17 @@ router.post('/api/auth/login', async (req, res) => {
   try {
     const { email, password } = req.body || {};
     if (!email || !password) {
-      return res.status(400).json({ message: 'email and password are required.' });
+      return res.status(400).json({ success: false, message: 'email and password are required.' });
     }
+
     const normEmail = normalizeEmail(email);
     const user = await User.findOne({ email: normEmail });
     if (!user) {
-      return res.status(401).json({ message: 'Invalid email or password.' });
+      return res.status(401).json({ success: false, message: 'Invalid credentials' });
     }
     const ok = await bcrypt.compare(password, user.passwordHash);
     if (!ok) {
-      return res.status(401).json({ message: 'Invalid email or password.' });
+      return res.status(401).json({ success: false, message: 'Invalid credentials' });
     }
     const token = createSessionToken(user._id);
     const now = new Date();
@@ -191,46 +206,29 @@ router.post('/api/auth/login', async (req, res) => {
     user.modified_at = now;
     await user.save({ timestamps: false });
     setAuthCookie(res, token);
-    return res.status(200).json({ message: 'Login successful.', user: toPublicUser(user) });
+    return res.status(200).json({ success: true, message: 'Login successful', user: toPublicUser(user) });
   } catch (e) {
-    return res.status(500).json({ message: 'Unable to login right now.' });
+    return res.status(500).json({ success: false, message: 'Unable to login right now.' });
   }
 });
 
 // GET /api/auth/me
 router.get('/api/auth/me', optionalAuth, async (req, res) => {
   if (!req.user) {
-    return res.status(200).json({ message: 'Not authenticated.', user: null });
+    return res.sendStatus(401);
   }
 
-  return res.status(200).json({ message: 'Authenticated.', user: req.user });
+  return res.status(200).json(toPublicUser(req.user));
 });
 
 // POST /api/auth/logout
 router.post('/api/auth/logout', requireAuth, (req, res) => {
   clearAuthCookie(res);
-  return res.status(200).json({ message: 'Logout successful.' });
+  return res.status(200).json({ success: true, message: 'Logout successful' });
 });
 
 function escapeRegex(str = '') {
   return String(str).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-function serializeAdminUser(doc) {
-  if (!doc) return null;
-  const name = doc.name || [doc.first_name, doc.last_name].filter(Boolean).join(' ').trim() || null;
-  const email = doc.email || doc.username || null;
-  const phone = doc.phone || doc.telephone || null;
-  const createdAt = doc.created_at || doc.createdAt || null;
-  const lastLoginAt = doc.last_login || doc.lastLoginAt || null;
-  return {
-    id: String(doc._id),
-    name,
-    email,
-    phone: phone || null,
-    createdAt: createdAt ? new Date(createdAt).toISOString() : null,
-    lastLoginAt: lastLoginAt ? new Date(lastLoginAt).toISOString() : null,
-  };
 }
 
 // Admin: list users
@@ -272,8 +270,25 @@ router.get('/api/admin/users', requireAdmin, async (req, res) => {
       limit,
     });
   } catch (e) {
-    return res.status(500).json({ message: 'Unable to fetch users right now.' });
+    return res.status(500).json({ success: false, message: 'Unable to fetch users right now.' });
   }
 });
 
-module.exports = { router, requireAuth, optionalAuth, attachUser };
+function serializeAdminUser(doc) {
+  if (!doc) return null;
+  const name = doc.name || [doc.first_name, doc.last_name].filter(Boolean).join(' ').trim() || null;
+  const email = doc.email || doc.username || null;
+  const phone = doc.phone || doc.telephone || null;
+  const createdAt = doc.created_at || doc.createdAt || null;
+  const lastLoginAt = doc.last_login || doc.lastLoginAt || null;
+  return {
+    id: String(doc._id),
+    name,
+    email,
+    phone: phone || null,
+    createdAt: createdAt ? new Date(createdAt).toISOString() : null,
+    lastLoginAt: lastLoginAt ? new Date(lastLoginAt).toISOString() : null,
+  };
+}
+
+module.exports = { router, requireAuth, optionalAuth, attachUser, sendAuthRequired, requireAuthWithMessage };
