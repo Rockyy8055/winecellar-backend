@@ -2,32 +2,71 @@ const bcrypt = require("bcrypt");
 const validator = require("validator");
 const jwt = require("jsonwebtoken");
 const User = require("../models/user");
+const { buildCookieOptions } = require("../config/cookieOptions");
+
+const JWT_SECRET = process.env.JWT_SECRET;
+const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || "7d";
+const COOKIE_NAME = process.env.AUTH_COOKIE_NAME || "auth_session";
+
+if (!JWT_SECRET) {
+  const message = "JWT_SECRET environment variable is required for authentication.";
+  if (process.env.NODE_ENV === "production") {
+    throw new Error(message);
+  } else {
+    console.warn(message);
+  }
+}
+
+const UNIT_TO_MS = {
+  ms: 1,
+  s: 1000,
+  m: 60 * 1000,
+  h: 60 * 60 * 1000,
+  d: 24 * 60 * 60 * 1000,
+};
+
+function parseDurationMs(value, fallbackMs) {
+  if (!value) return fallbackMs;
+  if (!Number.isNaN(Number(value))) {
+    return Number(value);
+  }
+  const match = /^\s*(\d+)\s*(ms|s|m|h|d)\s*$/i.exec(value);
+  if (!match) return fallbackMs;
+  const amount = Number(match[1]);
+  const unit = match[2].toLowerCase();
+  return amount * (UNIT_TO_MS[unit] || 1);
+}
+
+const COOKIE_MAX_AGE = parseDurationMs(JWT_EXPIRES_IN, 7 * 24 * 60 * 60 * 1000);
+
+const createSessionToken = (userId) => {
+  if (!JWT_SECRET) {
+    throw new Error("JWT_SECRET is not configured.");
+  }
+  return jwt.sign({ userId: String(userId) }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
+};
 
 const generateAccessToken = (user) => {
-  return jwt.sign(
-    {
-      _id: user._id,
-      email: user.email,
-      role: user.role,
-      tokenVersion: user.tokenVersion,
-    },
-    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJfaWQiOiIxMjM0NTYiLCJlbWFpbCI6InVzZXJAZXhhbXBsZS5jb20iLCJleHAiOjE3MzU2ODcxNTh9.Jw_PYkwQBUwRxDYh7WCmVqL0aUphDoCesZrWzm_Tz4s",
-    { expiresIn: "15m" }
-  );
+  if (!JWT_SECRET) {
+    throw new Error("JWT_SECRET is not configured.");
+  }
+  return jwt.sign({ _id: user._id, email: user.email }, JWT_SECRET, { expiresIn: "15m" });
 };
 
 const generateRefreshToken = (user) => {
-  return jwt.sign(
-    {
-      _id: user._id,
-      email: user.email,
-      role: user.role,
-      tokenVersion: user.tokenVersion,
-    },
-    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJfaWQiOiIxMjM0NTYiLCJlbWFpbCI6InVzZXJAZXhhbXBsZS5jb20iLCJleHAiOjE3MzYyOTEwNTh9.ZjxIcPmI9VPnenJAsMmFRo7CfcSalVHUHlQhRw7qllQ",
-    { expiresIn: "7d" }
-  );
+  if (!JWT_SECRET) {
+    throw new Error("JWT_SECRET is not configured.");
+  }
+  return jwt.sign({ _id: user._id, email: user.email }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
 };
+
+function setAuthCookie(res, token) {
+  res.cookie(COOKIE_NAME, token, {
+    ...buildCookieOptions({
+      maxAge: COOKIE_MAX_AGE,
+    }),
+  });
+}
 
 const saveUser = async (req, res) => {
   console.log(req.body);
@@ -99,12 +138,28 @@ const signInUser = async (req, res) => {
     }
 
     // Generate tokens
+    const sessionToken = createSessionToken(user._id);
+    setAuthCookie(res, sessionToken);
+
     const accessToken = generateAccessToken(user);
     const refreshToken = generateRefreshToken(user);
 
-    res
-      .status(200)
-      .json({ message: "Sign-in successful", accessToken, refreshToken });
+    const now = new Date();
+    user.last_login = now;
+    user.modified_at = now;
+    await user.save({ timestamps: false });
+
+    res.status(200).json({
+      message: "Sign-in successful",
+      accessToken,
+      refreshToken,
+      user: {
+        id: String(user._id),
+        name: user.name,
+        email: user.email,
+        phone: user.phone || null,
+      },
+    });
   } catch (err) {
     console.error("Error signing in user:", err);
     res.status(500).json({ error: "Error signing in user" });
