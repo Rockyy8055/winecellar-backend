@@ -139,6 +139,14 @@ async function createUpsShipment(order) {
             CountryCode: shipToCountry,
           },
         },
+        PaymentInformation: {
+          ShipmentCharge: {
+            Type: '01',
+            BillShipper: {
+              AccountNumber: shipperNumber,
+            },
+          },
+        },
         Service: {
           Code: '11',
         },
