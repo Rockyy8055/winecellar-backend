@@ -27,8 +27,22 @@ function buildAllowedOrigins() {
 
 const allowedOrigins = buildAllowedOrigins();
 
+function isWinecellarOrigin(origin) {
+  if (!origin || typeof origin !== 'string') return false;
+  const trimmed = origin.trim();
+  if (!trimmed) return false;
+  if (trimmed === 'https://winecellar.co.in' || trimmed === 'https://www.winecellar.co.in') {
+    return true;
+  }
+  return /^https:\/\/[a-z0-9-]+\.winecellar\.co\.in$/i.test(trimmed);
+}
+
 function originValidator(origin, callback) {
   if (!origin) {
+    return callback(null, true);
+  }
+
+  if (isWinecellarOrigin(origin)) {
     return callback(null, true);
   }
 
