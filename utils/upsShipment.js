@@ -150,6 +150,9 @@ async function createUpsShipment(order) {
         Service: {
           Code: '11',
         },
+        PackagingType: {
+          Code: '02',
+        },
         Packages: [
           {
             PackagingType: { Code: '02' },
