@@ -150,13 +150,15 @@ async function createUpsShipment(order) {
         Service: {
           Code: '11',
         },
-        Package: {
-          PackagingType: { Code: '02' },
-          PackageWeight: {
-            UnitOfMeasurement: { Code: 'KGS' },
-            Weight: '1',
+        Packages: [
+          {
+            PackagingType: { Code: '02' },
+            PackageWeight: {
+              UnitOfMeasurement: { Code: 'KGS' },
+              Weight: '1',
+            },
           },
-        },
+        ],
       },
     },
   };
