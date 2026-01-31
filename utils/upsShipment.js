@@ -156,6 +156,14 @@ async function createUpsShipment(order) {
         Packages: [
           {
             PackagingType: { Code: '02' },
+            Dimensions: {
+              UnitOfMeasurement: {
+                Code: 'CM',
+              },
+              Length: '10',
+              Width: '10',
+              Height: '10',
+            },
             PackageWeight: {
               UnitOfMeasurement: { Code: 'KGS' },
               Weight: '1',
