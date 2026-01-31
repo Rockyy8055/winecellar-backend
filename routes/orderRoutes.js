@@ -7,7 +7,7 @@ const OrderDetails = require('../models/orderDetails');
 const { clearCartForUserId } = require('../controllers/cartController');
 const { updateOrderFromUPSTracking } = require('../services/upsTracking');
 const { requireAuth, optionalAuth, requireAuthWithMessage } = require('./userAuth');
-const { createUpsShipment } = require('../utils/upsShipment');
+const { createUpsShipment, cancelUpsShipment } = require('../utils/upsShipment');
 
 const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
 const VALID_PAYMENT_METHODS = new Map([
@@ -532,6 +532,11 @@ router.post('/api/orders/create', requireAuthWithMessage('Authentication require
           ?.PackageResults
           ?.TrackingNumber;
 
+      const shipmentIdentificationNumber =
+        upsResponse?.ShipmentResponse
+          ?.ShipmentResults
+          ?.ShipmentIdentificationNumber;
+
       if (!trackingNumber) {
         const err = new Error('UPS response missing TrackingNumber');
         err.statusCode = 502;
@@ -539,6 +544,9 @@ router.post('/api/orders/create', requireAuthWithMessage('Authentication require
       }
 
       orderDoc.upsTrackingNumber = String(trackingNumber);
+      if (shipmentIdentificationNumber) {
+        orderDoc.upsShipmentIdentificationNumber = String(shipmentIdentificationNumber);
+      }
       orderDoc.upsStatus = 'CREATED';
       orderDoc.carrier = 'UPS';
       orderDoc.carrierTrackingNumber = String(trackingNumber);
@@ -729,6 +737,32 @@ router.post('/api/orders/cancel/:trackingCode', optionalAuth, async (req, res) =
     // Optional: restock inventory here if your system decremented stock on order creation
     await order.save();
 
+    if (order.carrier === 'UPS' && order.upsStatus === 'CREATED' && order.upsVoidStatus !== 'VOIDED') {
+      try {
+        const voidResult = await cancelUpsShipment({
+          shipmentIdentificationNumber: order.upsShipmentIdentificationNumber,
+          trackingNumber: order.carrierTrackingNumber || order.upsTrackingNumber,
+        });
+        order.upsVoidStatus = 'VOIDED';
+        order.upsVoidResponse = voidResult;
+        await order.save();
+      } catch (voidErr) {
+        console.error('UPS void failed during order cancel:', {
+          trackingCode: order.trackingCode,
+          shipmentIdentificationNumber: order.upsShipmentIdentificationNumber || null,
+          trackingNumber: order.carrierTrackingNumber || order.upsTrackingNumber || null,
+          message: voidErr && voidErr.message ? voidErr.message : String(voidErr),
+          status: voidErr && voidErr.response ? voidErr.response.status : null,
+          data: voidErr && voidErr.response ? voidErr.response.data : null,
+        });
+        try {
+          order.upsVoidStatus = 'FAILED';
+          order.upsVoidResponse = voidErr && voidErr.response ? voidErr.response.data : { message: voidErr.message };
+          await order.save();
+        } catch (_) {}
+      }
+    }
+
     console.log('order cancellation', {
       trackingCode: order.trackingCode,
       userId: req.user?._id || null,
@@ -799,11 +833,19 @@ router.post('/api/admin/orders/:id/create-shipment', requireAdmin, async (req, r
         ?.PackageResults
         ?.TrackingNumber;
 
+    const shipmentIdentificationNumber =
+      upsResponse?.ShipmentResponse
+        ?.ShipmentResults
+        ?.ShipmentIdentificationNumber;
+
     if (!trackingNumber) {
       return res.status(502).json({ error: 'UPS response missing TrackingNumber' });
     }
 
     order.upsTrackingNumber = String(trackingNumber);
+    if (shipmentIdentificationNumber) {
+      order.upsShipmentIdentificationNumber = String(shipmentIdentificationNumber);
+    }
     order.upsStatus = 'CREATED';
     order.carrier = 'UPS';
     order.carrierTrackingNumber = String(trackingNumber);
@@ -813,6 +855,7 @@ router.post('/api/admin/orders/:id/create-shipment', requireAdmin, async (req, r
       message: 'UPS shipment created successfully',
       trackingNumber: order.carrierTrackingNumber,
       upsTrackingNumber: order.upsTrackingNumber,
+      shipmentIdentificationNumber: order.upsShipmentIdentificationNumber || undefined,
       carrier: order.carrier,
       upsStatus: order.upsStatus,
       status: order.status,

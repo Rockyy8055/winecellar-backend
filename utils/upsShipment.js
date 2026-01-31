@@ -78,6 +78,40 @@ function resolveStoreNameFromOrder(order) {
   );
 }
 
+async function cancelUpsShipment({ shipmentIdentificationNumber, trackingNumber }) {
+  const id = shipmentIdentificationNumber || trackingNumber;
+  if (!id) {
+    const err = new Error('UPS cancel requires shipmentIdentificationNumber or trackingNumber');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const token = await getUpsAccessToken();
+
+  const voidId = encodeURIComponent(String(id).trim());
+  const params = {};
+  if (trackingNumber) {
+    params.trackingnumber = String(trackingNumber).trim();
+  }
+
+  const url = `${baseURL}/api/shipments/v2403/void/cancel/${voidId}`;
+
+  try {
+    const response = await axios.delete(url, {
+      params,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+    });
+
+    return response.data;
+  } catch (err) {
+    console.log('UPS VOID FULL ERROR RESPONSE:', JSON.stringify(err.response?.data, null, 2));
+    throw err;
+  }
+}
+
 async function createUpsShipment(order) {
   console.log('UPS DEBUG INFO:', {
     UPS_ENV: process.env.UPS_ENV,
@@ -227,4 +261,4 @@ async function createUpsShipment(order) {
   }
 }
 
-module.exports = { createUpsShipment, getShipperFromStore };
+module.exports = { createUpsShipment, cancelUpsShipment, getShipperFromStore };

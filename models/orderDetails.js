@@ -130,11 +130,18 @@ const orderDetailsSchema = new mongoose.Schema({
   carrierLabelFormat: { type: String },
   carrierLabelData: { type: String },
   upsTrackingNumber: { type: String },
+  upsShipmentIdentificationNumber: { type: String },
   upsStatus: {
     type: String,
     enum: ['CREATED', 'FAILED'],
     default: null,
   },
+  upsVoidStatus: {
+    type: String,
+    enum: ['VOIDED', 'FAILED'],
+    default: null,
+  },
+  upsVoidResponse: { type: mongoose.Schema.Types.Mixed, default: null },
 });
 
 // Indexes for efficient lookups
