@@ -7,6 +7,37 @@ const baseURL =
     ? 'https://onlinetools.ups.com'
     : 'https://wwwcie.ups.com';
 
+function pruneUndefined(value) {
+  if (Array.isArray(value)) {
+    const cleaned = value
+      .map(item => pruneUndefined(item))
+      .filter(item => item !== undefined);
+    return cleaned;
+  }
+
+  if (value && typeof value === 'object') {
+    const out = {};
+    Object.entries(value).forEach(([key, val]) => {
+      const cleaned = pruneUndefined(val);
+      if (cleaned !== undefined) {
+        out[key] = cleaned;
+      }
+    });
+    return out;
+  }
+
+  if (value === null || value === undefined) {
+    return undefined;
+  }
+
+  return value;
+}
+
+function normalizeUkPostcode(value) {
+  if (value == null) return '';
+  return String(value).trim().replace(/\s+/g, ' ');
+}
+
 function getShipperFromStore(storeName) {
   if (!storeName) {
     throw new Error('Store name missing in order');
@@ -67,8 +98,8 @@ async function createUpsShipment(order) {
   const shipToName = shipping.name || order?.customer?.name || 'Customer';
   const shipToLine1 = shipping.addressLine1 || shipping.line1;
   const shipToCity = shipping.city;
-  const shipToPostalCode = shipping.postalCode || shipping.postcode;
-  const shipToCountry = (shipping.countryCode || shipping.country || 'GB');
+  const shipToPostalCode = normalizeUkPostcode(shipping.postalCode || shipping.postcode);
+  const shipToCountry = 'GB';
 
   const missing = [];
   if (!shipToLine1) missing.push('shippingAddress.line1');
@@ -81,17 +112,22 @@ async function createUpsShipment(order) {
     throw err;
   }
 
+  const shipperCountry = 'GB';
+  const shipperPostalCode = normalizeUkPostcode(shipper.PostalCode);
+  const shipperCity = shipper.City ? String(shipper.City).trim() : '';
+  const shipperNumber = process.env.UPS_ACCOUNT_NUMBER;
+
   const shipmentPayload = {
     ShipmentRequest: {
       Shipment: {
         Shipper: {
           Name: shipper.Name,
-          ShipperNumber: process.env.UPS_ACCOUNT_NUMBER,
+          ShipperNumber: shipperNumber,
           Address: {
             AddressLine: shipper.AddressLine,
-            City: shipper.City,
-            PostalCode: shipper.PostalCode,
-            CountryCode: shipper.CountryCode,
+            City: shipperCity,
+            PostalCode: shipperPostalCode,
+            CountryCode: shipperCountry,
           },
         },
         ShipTo: {
@@ -100,7 +136,7 @@ async function createUpsShipment(order) {
             AddressLine: [shipToLine1],
             City: shipToCity,
             PostalCode: shipToPostalCode,
-            CountryCode: String(shipToCountry).toUpperCase(),
+            CountryCode: shipToCountry,
           },
         },
         Service: {
@@ -117,8 +153,10 @@ async function createUpsShipment(order) {
     },
   };
 
+  const prunedPayload = pruneUndefined(shipmentPayload);
+
   try {
-    const response = await axios.post(`${baseURL}/api/shipments/v1/ship`, shipmentPayload, {
+    const response = await axios.post(`${baseURL}/api/shipments/v1/ship`, prunedPayload, {
       headers: {
         Authorization: `Bearer ${token}`,
         'Content-Type': 'application/json',
@@ -127,7 +165,7 @@ async function createUpsShipment(order) {
 
     return response.data;
   } catch (err) {
-    console.log('UPS ERROR RESPONSE:', err.response?.data);
+    console.log('UPS FULL ERROR RESPONSE:', JSON.stringify(err.response?.data, null, 2));
     throw err;
   }
 }
