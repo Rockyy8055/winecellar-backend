@@ -117,12 +117,55 @@ async function createUpsShipment(order) {
   const shipperCity = shipper.City ? String(shipper.City).trim() : '';
   const shipperNumber = process.env.UPS_ACCOUNT_NUMBER;
 
+  const packageBlock = {
+    Packaging: {
+      Code: '02',
+      Description: 'Customer Supplied Package',
+    },
+    Dimensions: {
+      UnitOfMeasurement: {
+        Code: 'CM',
+      },
+      Length: '20',
+      Width: '15',
+      Height: '10',
+    },
+    PackageWeight: {
+      UnitOfMeasurement: {
+        Code: 'KGS',
+      },
+      Weight: '1',
+    },
+  };
+
+  if (!packageBlock.Packaging?.Code) {
+    throw new Error('UPS payload invalid: Packaging.Code missing');
+  }
+  if (!packageBlock.Dimensions?.Length || !packageBlock.Dimensions?.Width || !packageBlock.Dimensions?.Height) {
+    throw new Error('UPS payload invalid: Dimensions missing');
+  }
+  if (!packageBlock.PackageWeight?.Weight) {
+    throw new Error('UPS payload invalid: PackageWeight.Weight missing');
+  }
+
   const shipmentPayload = {
     ShipmentRequest: {
+      Request: {
+        RequestOption: 'validate',
+      },
       Shipment: {
         Shipper: {
           Name: shipper.Name,
           ShipperNumber: shipperNumber,
+          Address: {
+            AddressLine: shipper.AddressLine,
+            City: shipperCity,
+            PostalCode: shipperPostalCode,
+            CountryCode: shipperCountry,
+          },
+        },
+        ShipFrom: {
+          Name: shipper.Name,
           Address: {
             AddressLine: shipper.AddressLine,
             City: shipperCity,
@@ -149,30 +192,23 @@ async function createUpsShipment(order) {
         },
         Service: {
           Code: '11',
+          Description: 'UPS Standard',
         },
-        PackagingType: {
-          Code: '02',
+        Package: [packageBlock],
+      },
+      LabelSpecification: {
+        LabelImageFormat: {
+          Code: 'PNG',
         },
-        Packages: [
-          {
-            PackagingType: { Code: '02' },
-            Dimensions: {
-              UnitOfMeasurement: {
-                Code: 'CM',
-              },
-              Length: '10',
-              Width: '10',
-              Height: '10',
-            },
-            PackageWeight: {
-              UnitOfMeasurement: { Code: 'KGS' },
-              Weight: '1',
-            },
-          },
-        ],
       },
     },
   };
+
+  if (!Array.isArray(shipmentPayload.ShipmentRequest?.Shipment?.Package) || shipmentPayload.ShipmentRequest.Shipment.Package.length === 0) {
+    throw new Error('UPS payload invalid: Shipment.Package[] is missing or empty');
+  }
+
+  console.log('UPS FINAL PAYLOAD:', JSON.stringify(shipmentPayload, null, 2));
 
   const prunedPayload = pruneUndefined(shipmentPayload);
 
