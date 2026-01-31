@@ -3,10 +3,6 @@ const validator = require('validator');
 const HeroSlides = require('../models/heroSlides');
 
 const MAX_SLIDES = 6;
-const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
-
-let cachedPublicPayload = null;
-let cacheExpiresAt = 0;
 
 function isValidHttpUrl(value) {
   if (!value || typeof value !== 'string') return false;
@@ -83,10 +79,7 @@ function buildPublicPayload(slides) {
   };
 }
 
-function invalidateSliderCache() {
-  cachedPublicPayload = null;
-  cacheExpiresAt = 0;
-}
+function invalidateSliderCache() {}
 
 async function getAdminHeroSlides(_req, res) {
   try {
@@ -130,17 +123,9 @@ async function saveAdminHeroSlides(req, res) {
 
 async function getPublicHeroSlides(_req, res) {
   try {
-    const now = Date.now();
-    if (cachedPublicPayload && now < cacheExpiresAt) {
-      return res.json(cachedPublicPayload);
-    }
-
     const doc = await HeroSlides.findOne({}).lean();
     const slides = doc?.slides || [];
     const payload = buildPublicPayload(slides);
-
-    cachedPublicPayload = payload;
-    cacheExpiresAt = now + CACHE_TTL_MS;
 
     return res.json(payload);
   } catch (error) {
