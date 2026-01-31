@@ -512,11 +512,15 @@ router.post('/api/orders/create', requireAuthWithMessage('Authentication require
     if (!orderDoc.shippingAddress?.postcode) upsAddressMissing.push('shippingAddress.postcode');
     if (!orderDoc.shippingAddress?.country) upsAddressMissing.push('shippingAddress.country');
 
+    const upsEligiblePaymentMethods = new Set(['Credit Card', 'Debit Card', 'PayPal']);
+    const shouldAttemptUpsShipment = !isPickAndPay && upsEligiblePaymentMethods.has(normalizedPaymentMethod);
+
     console.log('UPS shipment attempt', {
       orderId: String(orderDoc._id),
       trackingCode: orderDoc.trackingCode,
       paymentMethod: orderDoc.paymentMethod,
       isPickAndPay,
+      shouldAttemptUpsShipment,
       paymentReference: orderDoc.paymentReference || null,
       hasShippingAddress: !!orderDoc.shippingAddress,
       upsAddressMissing,
@@ -524,8 +528,9 @@ router.post('/api/orders/create', requireAuthWithMessage('Authentication require
       upsEnvStatus,
     });
 
-    try {
-      const upsResponse = await createUpsShipment(orderDoc);
+    if (shouldAttemptUpsShipment) {
+      try {
+        const upsResponse = await createUpsShipment(orderDoc);
       const trackingNumber =
         upsResponse?.ShipmentResponse
           ?.ShipmentResults
@@ -560,22 +565,23 @@ router.post('/api/orders/create', requireAuthWithMessage('Authentication require
         upsTrackingNumber: orderDoc.upsTrackingNumber,
         upsStatus: orderDoc.upsStatus,
       });
-    } catch (shipmentError) {
-      console.error('UPS shipment creation skipped/failed:', {
-        message: shipmentError && shipmentError.message ? shipmentError.message : String(shipmentError),
-        statusCode: shipmentError && shipmentError.statusCode ? shipmentError.statusCode : null,
-        orderId: String(orderDoc._id),
-        trackingCode: orderDoc.trackingCode,
-        paymentMethod: orderDoc.paymentMethod,
-        upsAddressMissing,
-        upsEnvStatus,
-        stack: shipmentError && shipmentError.stack ? shipmentError.stack : null,
-      });
+      } catch (shipmentError) {
+        console.error('UPS shipment creation skipped/failed:', {
+          message: shipmentError && shipmentError.message ? shipmentError.message : String(shipmentError),
+          statusCode: shipmentError && shipmentError.statusCode ? shipmentError.statusCode : null,
+          orderId: String(orderDoc._id),
+          trackingCode: orderDoc.trackingCode,
+          paymentMethod: orderDoc.paymentMethod,
+          upsAddressMissing,
+          upsEnvStatus,
+          stack: shipmentError && shipmentError.stack ? shipmentError.stack : null,
+        });
 
-      try {
-        orderDoc.upsStatus = 'FAILED';
-        await orderDoc.save();
-      } catch (_) {}
+        try {
+          orderDoc.upsStatus = 'FAILED';
+          await orderDoc.save();
+        } catch (_) {}
+      }
     }
 
     emailOwnerOrderPlaced(orderDoc).catch(() => {});
@@ -825,6 +831,10 @@ router.post('/api/admin/orders/:id/create-shipment', requireAdmin, async (req, r
   try {
     const order = await OrderDetails.findById(req.params.id);
     if (!order) return res.status(404).json({ error: 'Not found' });
+
+    if (isPickAndPayOrder(order)) {
+      return res.status(409).json({ error: 'Pick & Pay orders cannot be shipped with UPS' });
+    }
 
     const upsResponse = await createUpsShipment(order);
     const trackingNumber =
