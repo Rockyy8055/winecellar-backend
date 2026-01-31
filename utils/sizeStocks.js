@@ -1,4 +1,18 @@
 const SAFE_SIZE_KEYS = ['1.5LTR', '1LTR', '75CL', '70CL', '35CL', '20CL', '10CL', '5CL'];
+const SIZE_ALIAS_MAP = new Map([
+  ['1500ML', '1.5LTR'],
+  ['1.5L', '1.5LTR'],
+  ['150CL', '1.5LTR'],
+  ['1000ML', '1LTR'],
+  ['1L', '1LTR'],
+  ['100CL', '1LTR'],
+  ['750ML', '75CL'],
+  ['700ML', '70CL'],
+  ['350ML', '35CL'],
+  ['200ML', '20CL'],
+  ['100ML', '10CL'],
+  ['50ML', '5CL'],
+]);
 
 function normalizeSizeKey(raw) {
   if (raw === undefined || raw === null) {
@@ -68,6 +82,18 @@ function parseSizeStocksInput(raw, options = {}) {
 function normalizeSizeStocksForResponse(raw) {
   const normalized = parseSizeStocksInput(raw, { rejectUnknown: false, fillMissing: true, coerce: 'soft' });
   return normalized ?? createEmptySizeStocks();
+}
+
+function normalizeSizeInput(value) {
+  const normalized = normalizeSizeKey(value);
+  if (!normalized) {
+    return '';
+  }
+  if (SAFE_SIZE_KEYS.includes(normalized)) {
+    return normalized;
+  }
+  const alias = SIZE_ALIAS_MAP.get(normalized);
+  return alias || normalized;
 }
 
 function computeTotalStock(sizeStocks = {}) {
@@ -186,6 +212,7 @@ module.exports = {
   normalizeSizeKey,
   parseSizeStocksInput,
   normalizeSizeStocksForResponse,
+  normalizeSizeInput,
   computeTotalStock,
   createEmptySizeStocks,
   fillMissingKeys,

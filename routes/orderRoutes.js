@@ -4,6 +4,7 @@ const { getOrder, updateOrderStatus, trackOrder, initializeOrderMetadata, emailO
 const { requireAdmin } = require('../config/requireAdmin');
 const { sendMail, getEmailProvider } = require('../services/emailService');
 const OrderDetails = require('../models/orderDetails');
+const { clearCartForUserId } = require('../controllers/cartController');
 
 const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
 const VALID_PAYMENT_METHODS = new Map([
@@ -395,6 +396,12 @@ router.post('/api/orders/create', requireAuthWithMessage('Authentication require
       console.error('Transactional email failed:', emailError && emailError.message ? emailError.message : emailError);
       orderDoc.emailSent = false;
       try { await orderDoc.save(); } catch (_) {}
+    }
+
+    if (userId) {
+      clearCartForUserId(userId).catch((err) => {
+        console.error('Failed to clear cart after order:', err);
+      });
     }
 
     return res.json({
