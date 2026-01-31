@@ -10,6 +10,12 @@ node index.js
 
 Docs: https://mern-backend-1-hugd.onrender.com/api-docs/
 
+## Homepage Hero Slider APIs
+
+- `GET /api/slider` — Public. Returns `{ slides: [...] }` ordered for display. Cached for 5 minutes.
+- `GET /api/admin/slider` — Requires admin auth. Returns current slides + metadata.
+- `POST /api/admin/slider` — Requires admin auth. Body `{ slides: [ { id?, title, subtitle, imageUrl, url } ] }`. Enforces max 6 slides, validates http/https URLs, generates ids when omitted, persists order, records `updatedBy`.
+
 ## Required Environment Variables
 
 | Name | Description | Required | Default |
