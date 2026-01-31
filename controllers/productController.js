@@ -541,6 +541,7 @@ module.exports = {
   adminListProducts,
   adminUpdateProduct,
   adminUpdateProductStock,
+  formatProductForResponse,
   adminDeleteProduct,
   adminBatchUpdateSizeStocks,
 };
