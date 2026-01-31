@@ -3,6 +3,7 @@ const cors = require('cors');
 const FALLBACK_ALLOWED_ORIGINS = [
   'https://www.winecellar.co.in',
   'https://winecellar.co.in',
+  'https://api.winecellar.co.in',
   'http://localhost:3000',
   'http://localhost:4000',
   'http://localhost:5173',
