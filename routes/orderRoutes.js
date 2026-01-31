@@ -1,10 +1,13 @@
 const express = require('express');
 const router = express.Router();
-const { getOrder, updateOrderStatus, trackOrder, initializeOrderMetadata, emailOwnerOrderPlaced, createShipmentForOrder } = require('../controllers/orderController');
+const { getOrder, updateOrderStatus, trackOrder, initializeOrderMetadata, emailOwnerOrderPlaced } = require('../controllers/orderController');
 const { requireAdmin } = require('../config/requireAdmin');
 const { sendMail, getEmailProvider } = require('../services/emailService');
 const OrderDetails = require('../models/orderDetails');
 const { clearCartForUserId } = require('../controllers/cartController');
+const { updateOrderFromUPSTracking } = require('../services/upsTracking');
+const { requireAuth, optionalAuth, requireAuthWithMessage } = require('./userAuth');
+const { createUpsShipment } = require('../utils/upsShipment');
 
 const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
 const VALID_PAYMENT_METHODS = new Map([
@@ -42,6 +45,9 @@ function normalizeOrderItems(orderItems) {
       return acc;
     }
     acc.push({ name, qty, price });
+    return acc;
+  }, []);
+}
 
 router.get('/api/my-orders', requireAuth, async (req, res) => {
   try {
@@ -49,26 +55,32 @@ router.get('/api/my-orders', requireAuth, async (req, res) => {
       .sort({ created_at: -1 })
       .lean();
 
-    const formatted = orders.map((order) => ({
-      id: String(order._id),
-      trackingCode: order.trackingCode,
-      status: order.status,
-      createdAt: order.created_at,
-      total: order.total,
-      paymentMethod: order.paymentMethod,
-      items: order.items,
-      pickupStore: order.pickupStore,
-      shippingAddress: order.shippingAddress,
-    }));
+    const formatted = orders.map((order) => {
+      const statusMeta = buildOrderStatusSummary(order);
+      const upsTrackingNumber = order.upsTrackingNumber || order.carrierTrackingNumber || null;
+      return {
+        id: String(order._id),
+        trackingCode: upsTrackingNumber || order.trackingCode,
+        internalTrackingCode: order.trackingCode,
+        upsTrackingNumber,
+        status: order.status,
+        statusDisplay: statusMeta.statusDisplay,
+        statusMessage: statusMeta.statusMessage,
+        pickupLocation: statusMeta.pickupLocation,
+        createdAt: order.created_at,
+        total: order.total,
+        paymentMethod: order.paymentMethod,
+        items: order.items,
+        pickupStore: order.pickupStore,
+        shippingAddress: order.shippingAddress,
+      };
+    });
 
     return res.json({ orders: formatted });
   } catch (err) {
     return res.status(500).json({ error: 'FAILED_TO_FETCH_ORDERS' });
   }
 });
-    return acc;
-  }, []);
-}
 
 function extractOrderPayload(body = {}) {
   const customerEmail = body.customerEmail || body.customer?.email || body.billingDetails?.email;
@@ -82,6 +94,7 @@ function extractOrderPayload(body = {}) {
   const billingDetails = body.billingDetails || null;
   const pickupDetails = body.pickupDetails || null;
   const pickupStore = body.pickupStore || null;
+  const shippingAddress = body.shippingAddress || body.shipping || body.deliveryAddress || body.address || null;
   const paymentReference = body.paymentReference || body.payment_reference || body.paymentId || body.payment_id || body.orderId || body.orderID || null;
 
   return {
@@ -96,8 +109,41 @@ function extractOrderPayload(body = {}) {
     billingDetails,
     pickupDetails,
     pickupStore,
+    shippingAddress,
     paymentReference,
   };
+}
+
+function normalizeShippingAddress(address, fallbackBillingDetails) {
+  if (address && typeof address === 'object') {
+    const line1 = address.line1 || address.addressLine1 || address.address1 || address.address || address.street || address.street1;
+    const line2 = address.line2 || address.addressLine2 || address.address2 || address.street2;
+    const city = address.city || address.town;
+    const state = address.state || address.region;
+    const postcode = address.postcode || address.postalCode || address.zip || address.zipcode;
+    const country = address.country || address.countryCode;
+    const phone = address.phone || address.telephone;
+
+    const normalized = {};
+    if (line1 != null) normalized.line1 = String(line1);
+    if (line2 != null) normalized.line2 = String(line2);
+    if (city != null) normalized.city = String(city);
+    if (state != null) normalized.state = String(state);
+    if (postcode != null) normalized.postcode = String(postcode);
+    if (country != null) normalized.country = String(country);
+    if (phone != null) normalized.phone = String(phone);
+    return Object.keys(normalized).length ? normalized : undefined;
+  }
+
+  const billing = fallbackBillingDetails && typeof fallbackBillingDetails === 'object' ? fallbackBillingDetails : null;
+  if (!billing) return undefined;
+  const fallback = {};
+  if (billing.address != null) fallback.line1 = String(billing.address);
+  if (billing.postcode != null) fallback.postcode = String(billing.postcode);
+  if (billing.phone != null) fallback.phone = String(billing.phone);
+  if (billing.country != null) fallback.country = String(billing.country);
+  if (billing.city != null) fallback.city = String(billing.city);
+  return Object.keys(fallback).length ? fallback : undefined;
 }
 
 function buildOrderEmail({ orderId, customerName, paymentMethod, orderItems, subtotal, tax, total, shopLocation, billingDetails, pickupStore, isPickAndPay }) {
@@ -284,8 +330,78 @@ function serializeOrderForAdmin(doc) {
   };
 }
 
-// Create order (simple)
-const { requireAuth, optionalAuth, requireAuthWithMessage } = require('./userAuth');
+const STATUS_DISPLAY_LABELS = {
+  PLACED: 'Order placed',
+  CONFIRMED: 'Processed',
+  PICKED: 'Picked & packed',
+  SHIPPED: 'Shipped',
+  OUT_FOR_DELIVERY: 'Out for delivery',
+  DELIVERED: 'Delivered',
+  CANCELLED: 'Cancelled',
+};
+
+function isPickAndPayOrder(order) {
+  const method = String(order?.paymentMethod || order?.method || '').trim().toLowerCase();
+  return method === 'pick & pay';
+}
+
+function buildPickAndPayStatus(order) {
+  const pickup = order?.pickupStore || {};
+  const segments = [pickup.storeName, pickup.addressLine1, pickup.addressLine2, pickup.city]
+    .filter(Boolean)
+    .join(', ');
+  const pickupLocation = segments || pickup.storeName || pickup.addressLine1 || 'the store';
+  return {
+    statusDisplay: 'Ready for collection',
+    statusMessage: `Please collect it at the store${pickupLocation ? `: ${pickupLocation}` : ''}. Thank you!`,
+    pickupLocation: pickupLocation || null,
+  };
+}
+
+function buildOrderStatusSummary(order, trackingInfo = null) {
+  if (!order) {
+    return {
+      statusDisplay: 'Order placed',
+      statusMessage: 'Order placed',
+      pickupLocation: null,
+    };
+  }
+
+  const status = order.status || 'PLACED';
+
+  if (isPickAndPayOrder(order)) {
+    const pickStatus = buildPickAndPayStatus(order);
+    return { statusDisplay: pickStatus.statusDisplay, statusMessage: pickStatus.statusMessage, pickupLocation: pickStatus.pickupLocation };
+  }
+
+  const statusDisplay = STATUS_DISPLAY_LABELS[status] || status;
+  let statusMessage = statusDisplay;
+
+  if (order.carrier === 'UPS' && trackingInfo?.statusDescription) {
+    statusMessage = trackingInfo.statusDescription;
+  } else if (Array.isArray(order.statusHistory) && order.statusHistory.length) {
+    statusMessage = order.statusHistory[order.statusHistory.length - 1].note || statusDisplay;
+  }
+
+  return { statusDisplay, statusMessage, pickupLocation: null };
+}
+
+async function syncOrderWithUPSIfNeeded(order) {
+  if (!order || order.carrier !== 'UPS' || !order.carrierTrackingNumber) {
+    return { order, trackingInfo: null };
+  }
+
+  try {
+    const result = await updateOrderFromUPSTracking(order._id);
+    return {
+      order: result?.order || order,
+      trackingInfo: result?.trackingInfo || null,
+    };
+  } catch (err) {
+    console.error('UPS sync (track endpoint) failed:', err.message);
+    return { order, trackingInfo: null };
+  }
+}
 
 router.post('/api/orders/create', requireAuthWithMessage('Authentication required to place orders'), async (req, res) => {
   try {
@@ -302,6 +418,7 @@ router.post('/api/orders/create', requireAuthWithMessage('Authentication require
       shopLocation,
       billingDetails,
       pickupStore,
+      shippingAddress,
       paymentReference,
     } = extracted;
 
@@ -349,6 +466,9 @@ router.post('/api/orders/create', requireAuthWithMessage('Authentication require
     const isPickAndPay = normalizedPaymentMethod === 'Pick & Pay';
     const sanitizedBillingDetails = sanitizeBillingDetails(billingDetails);
     const normalizedPickupStore = normalizePickupStore(pickupStore) || (shopLocation ? { storeName: shopLocation } : undefined);
+    const normalizedShippingAddress = isPickAndPay
+      ? buildPickAndPayShippingAddress(normalizedPickupStore, shippingAddress)
+      : normalizeShippingAddress(shippingAddress, billingDetails);
     const orderDoc = new OrderDetails({
       trackingCode: orderId,
       method: normalizedPaymentMethod.toLowerCase(),
@@ -365,11 +485,89 @@ router.post('/api/orders/create', requireAuthWithMessage('Authentication require
       total: safeTotal,
       billingDetails: sanitizedBillingDetails,
       pickupStore: normalizedPickupStore,
+      shippingAddress: normalizedShippingAddress,
       shippingFee: 0,
       emailProvider: getEmailProvider(),
     });
     initializeOrderMetadata(orderDoc);
     await orderDoc.save();
+
+    const upsEnvStatus = {
+      UPS_ENV: process.env.UPS_ENV || null,
+      UPS_BASE_URL: process.env.UPS_BASE_URL ? 'set' : 'missing',
+      UPS_CLIENT_ID: process.env.UPS_CLIENT_ID ? 'set' : 'missing',
+      UPS_CLIENT_SECRET: process.env.UPS_CLIENT_SECRET ? 'set' : 'missing',
+      UPS_ACCOUNT_NUMBER: process.env.UPS_ACCOUNT_NUMBER ? 'set' : 'missing',
+      UPS_SHIPPER_NAME: process.env.UPS_SHIPPER_NAME ? 'set' : 'missing',
+      UPS_SHIPPER_LINE1: process.env.UPS_SHIPPER_LINE1 ? 'set' : 'missing',
+      UPS_SHIPPER_CITY: process.env.UPS_SHIPPER_CITY ? 'set' : 'missing',
+      UPS_SHIPPER_POSTAL_CODE: process.env.UPS_SHIPPER_POSTAL_CODE ? 'set' : 'missing',
+      UPS_SHIPPER_COUNTRY: process.env.UPS_SHIPPER_COUNTRY ? 'set' : 'missing',
+    };
+
+    const upsAddressMissing = [];
+    if (!orderDoc.shippingAddress?.line1) upsAddressMissing.push('shippingAddress.line1');
+    if (!orderDoc.shippingAddress?.city) upsAddressMissing.push('shippingAddress.city');
+    if (!orderDoc.shippingAddress?.postcode) upsAddressMissing.push('shippingAddress.postcode');
+    if (!orderDoc.shippingAddress?.country) upsAddressMissing.push('shippingAddress.country');
+
+    console.log('UPS shipment attempt', {
+      orderId: String(orderDoc._id),
+      trackingCode: orderDoc.trackingCode,
+      paymentMethod: orderDoc.paymentMethod,
+      isPickAndPay,
+      paymentReference: orderDoc.paymentReference || null,
+      hasShippingAddress: !!orderDoc.shippingAddress,
+      upsAddressMissing,
+      shippingAddress: orderDoc.shippingAddress || null,
+      upsEnvStatus,
+    });
+
+    try {
+      const upsResponse = await createUpsShipment(orderDoc);
+      const trackingNumber =
+        upsResponse?.ShipmentResponse
+          ?.ShipmentResults
+          ?.PackageResults
+          ?.TrackingNumber;
+
+      if (!trackingNumber) {
+        const err = new Error('UPS response missing TrackingNumber');
+        err.statusCode = 502;
+        throw err;
+      }
+
+      orderDoc.upsTrackingNumber = String(trackingNumber);
+      orderDoc.upsStatus = 'CREATED';
+      orderDoc.carrier = 'UPS';
+      orderDoc.carrierTrackingNumber = String(trackingNumber);
+      await orderDoc.save();
+
+      console.log('UPS shipment created', {
+        orderId: String(orderDoc._id),
+        trackingCode: orderDoc.trackingCode,
+        carrier: orderDoc.carrier,
+        carrierTrackingNumber: orderDoc.carrierTrackingNumber,
+        upsTrackingNumber: orderDoc.upsTrackingNumber,
+        upsStatus: orderDoc.upsStatus,
+      });
+    } catch (shipmentError) {
+      console.error('UPS shipment creation skipped/failed:', {
+        message: shipmentError && shipmentError.message ? shipmentError.message : String(shipmentError),
+        statusCode: shipmentError && shipmentError.statusCode ? shipmentError.statusCode : null,
+        orderId: String(orderDoc._id),
+        trackingCode: orderDoc.trackingCode,
+        paymentMethod: orderDoc.paymentMethod,
+        upsAddressMissing,
+        upsEnvStatus,
+        stack: shipmentError && shipmentError.stack ? shipmentError.stack : null,
+      });
+
+      try {
+        orderDoc.upsStatus = 'FAILED';
+        await orderDoc.save();
+      } catch (_) {}
+    }
 
     emailOwnerOrderPlaced(orderDoc).catch(() => {});
     const { html, text } = buildOrderEmail({
@@ -404,9 +602,14 @@ router.post('/api/orders/create', requireAuthWithMessage('Authentication require
       });
     }
 
+    const upsTrackingNumber = orderDoc.upsTrackingNumber || orderDoc.carrierTrackingNumber || null;
     return res.json({
-      orderId,
-      trackingCode: orderId,
+      success: true,
+      orderId: String(orderDoc._id),
+      dbOrderId: String(orderDoc._id),
+      trackingCode: upsTrackingNumber || orderId,
+      internalTrackingCode: orderId,
+      upsTrackingNumber,
       emailSent,
     });
   } catch (err) {
@@ -425,26 +628,58 @@ router.patch('/api/orders/:id/status', requireAdmin, updateOrderStatus);
 router.get('/api/orders/track/:trackingCode', optionalAuth, async (req, res) => {
   try {
     const code = req.params.trackingCode;
-    const order = await OrderDetails.findOne({ trackingCode: code });
+    const order = await OrderDetails.findOne({
+      $or: [
+        { trackingCode: code },
+        { carrierTrackingNumber: code },
+        { upsTrackingNumber: code },
+      ],
+    });
     if (!order) return res.status(404).json({ message: 'Order not found' });
     const sessionUserId = req.user?._id ? String(req.user._id) : null;
     const isOwner = sessionUserId && String(order.user_id || '') === sessionUserId;
+    const syncResult = await syncOrderWithUPSIfNeeded(order);
+    const currentOrder = syncResult.order || order;
+    const trackingInfo = syncResult.trackingInfo;
+    const statusMeta = buildOrderStatusSummary(currentOrder, trackingInfo);
+
+    const upsTrackingNumber = currentOrder.upsTrackingNumber || currentOrder.carrierTrackingNumber || null;
+
+    const basePayload = {
+      trackingCode: upsTrackingNumber || currentOrder.trackingCode,
+      internalTrackingCode: currentOrder.trackingCode,
+      upsTrackingNumber,
+      status: currentOrder.status,
+      statusDisplay: statusMeta.statusDisplay,
+      statusMessage: statusMeta.statusMessage,
+      pickupLocation: statusMeta.pickupLocation || undefined,
+      estimatedDelivery: currentOrder.estimatedDelivery,
+    };
+
     if (isOwner) {
       return res.json({
-        trackingCode: order.trackingCode,
-        status: order.status,
-        statusHistory: order.statusHistory,
-        customer: order.customer,
-        shippingAddress: order.shippingAddress,
-        items: order.items,
-        subtotal: order.subtotal,
-        shippingFee: order.shippingFee,
-        total: order.total,
-        createdAt: order.created_at,
-        estimatedDelivery: order.estimatedDelivery,
+        ...basePayload,
+        statusHistory: currentOrder.statusHistory,
+        customer: currentOrder.customer,
+        shippingAddress: currentOrder.shippingAddress,
+        items: currentOrder.items,
+        subtotal: currentOrder.subtotal,
+        shippingFee: currentOrder.shippingFee,
+        total: currentOrder.total,
+        createdAt: currentOrder.created_at,
+        trackingInfo: trackingInfo || undefined,
       });
     }
-    return res.json({ trackingCode: order.trackingCode, status: order.status, estimatedDelivery: order.estimatedDelivery });
+
+    if (trackingInfo) {
+      basePayload.trackingInfo = {
+        status: trackingInfo.status,
+        statusDescription: trackingInfo.statusDescription,
+        deliveryDate: trackingInfo.deliveryDate,
+      };
+    }
+
+    return res.json(basePayload);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -553,12 +788,33 @@ router.get('/api/admin/orders/:id', requireAdmin, async (req, res) => {
 // Admin: manually create UPS shipment for an order
 router.post('/api/admin/orders/:id/create-shipment', requireAdmin, async (req, res) => {
   try {
-    const order = await createShipmentForOrder(req.params.id);
-    res.json({ 
+    const order = await OrderDetails.findById(req.params.id);
+    if (!order) return res.status(404).json({ error: 'Not found' });
+
+    const upsResponse = await createUpsShipment(order);
+    const trackingNumber =
+      upsResponse?.ShipmentResponse
+        ?.ShipmentResults
+        ?.PackageResults
+        ?.TrackingNumber;
+
+    if (!trackingNumber) {
+      return res.status(502).json({ error: 'UPS response missing TrackingNumber' });
+    }
+
+    order.upsTrackingNumber = String(trackingNumber);
+    order.upsStatus = 'CREATED';
+    order.carrier = 'UPS';
+    order.carrierTrackingNumber = String(trackingNumber);
+    await order.save();
+
+    res.json({
       message: 'UPS shipment created successfully',
       trackingNumber: order.carrierTrackingNumber,
+      upsTrackingNumber: order.upsTrackingNumber,
       carrier: order.carrier,
-      status: order.status
+      upsStatus: order.upsStatus,
+      status: order.status,
     });
   } catch (e) {
     res.status(500).json({ error: e.message });
