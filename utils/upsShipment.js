@@ -1,8 +1,9 @@
 const axios = require('axios');
 const { getUpsAccessToken } = require('./upsAuth');
 
-const UPS_BASE_URL =
-  process.env.UPS_ENV === 'production'
+const UPS_ENV = process.env.UPS_ENV || 'sandbox';
+const baseURL =
+  UPS_ENV === 'production'
     ? 'https://onlinetools.ups.com'
     : 'https://wwwcie.ups.com';
 
@@ -47,6 +48,15 @@ function resolveStoreNameFromOrder(order) {
 }
 
 async function createUpsShipment(order) {
+  console.log('UPS DEBUG INFO:', {
+    UPS_ENV: process.env.UPS_ENV,
+    TOKEN_URL: `${baseURL}/security/v1/oauth/token`,
+    SHIPMENT_URL: `${baseURL}/api/shipments/v1/ship`,
+    CLIENT_ID_LENGTH: process.env.UPS_CLIENT_ID?.length,
+    SECRET_LENGTH: process.env.UPS_CLIENT_SECRET?.length,
+    ACCOUNT_NUMBER: process.env.UPS_ACCOUNT_NUMBER,
+  });
+
   const token = await getUpsAccessToken();
 
   const storeName = resolveStoreNameFromOrder(order);
@@ -107,14 +117,19 @@ async function createUpsShipment(order) {
     },
   };
 
-  const response = await axios.post(`${UPS_BASE_URL}/ship/v1/shipments`, shipmentPayload, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
-  });
+  try {
+    const response = await axios.post(`${baseURL}/api/shipments/v1/ship`, shipmentPayload, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+    });
 
-  return response.data;
+    return response.data;
+  } catch (err) {
+    console.log('UPS ERROR RESPONSE:', err.response?.data);
+    throw err;
+  }
 }
 
 module.exports = { createUpsShipment, getShipperFromStore };
