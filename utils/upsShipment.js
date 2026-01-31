@@ -1,16 +1,56 @@
 const axios = require('axios');
-const { getUpsAccessToken, UPS_BASE_URL } = require('./upsAuth');
+const { getUpsAccessToken } = require('./upsAuth');
 
-const DEFAULT_SHIPPER = Object.freeze({
-  name: 'WineCellar',
-  addressLine: '1, 536 Kingsland Road',
-  city: 'London',
-  postalCode: 'E8 4AH',
-  countryCode: 'GB',
-});
+const UPS_BASE_URL =
+  process.env.UPS_ENV === 'production'
+    ? 'https://onlinetools.ups.com'
+    : 'https://wwwcie.ups.com';
+
+function getShipperFromStore(storeName) {
+  if (!storeName) {
+    throw new Error('Store name missing in order');
+  }
+
+  const name = String(storeName).toLowerCase();
+
+  if (name.includes('dalston')) {
+    return {
+      Name: 'WineCellar Dalston',
+      AddressLine: ['536 Kingsland Road'],
+      City: 'London',
+      PostalCode: 'E8 4AH',
+      CountryCode: 'GB',
+    };
+  }
+
+  if (name.includes('stoke')) {
+    return {
+      Name: 'WineCellar Stoke Newington',
+      AddressLine: ['164 Stoke Newington Road'],
+      City: 'London',
+      PostalCode: 'N16 7UY',
+      CountryCode: 'GB',
+    };
+  }
+
+  throw new Error('Invalid store location');
+}
+
+function resolveStoreNameFromOrder(order) {
+  return (
+    order?.shippingAddress?.storeName ||
+    order?.pickupStore?.storeName ||
+    order?.pickupStore?.storeId ||
+    order?.shippingAddress?.storeId ||
+    null
+  );
+}
 
 async function createUpsShipment(order) {
   const token = await getUpsAccessToken();
+
+  const storeName = resolveStoreNameFromOrder(order);
+  const shipper = getShipperFromStore(storeName);
 
   const shipping = order.shippingAddress || {};
 
@@ -35,13 +75,13 @@ async function createUpsShipment(order) {
     ShipmentRequest: {
       Shipment: {
         Shipper: {
-          Name: process.env.UPS_SHIPPER_NAME || DEFAULT_SHIPPER.name,
+          Name: shipper.Name,
           ShipperNumber: process.env.UPS_ACCOUNT_NUMBER,
           Address: {
-            AddressLine: [process.env.UPS_SHIPPER_LINE1 || DEFAULT_SHIPPER.addressLine],
-            City: process.env.UPS_SHIPPER_CITY || DEFAULT_SHIPPER.city,
-            PostalCode: process.env.UPS_SHIPPER_POSTAL_CODE || DEFAULT_SHIPPER.postalCode,
-            CountryCode: (process.env.UPS_SHIPPER_COUNTRY || DEFAULT_SHIPPER.countryCode),
+            AddressLine: shipper.AddressLine,
+            City: shipper.City,
+            PostalCode: shipper.PostalCode,
+            CountryCode: shipper.CountryCode,
           },
         },
         ShipTo: {
@@ -77,4 +117,4 @@ async function createUpsShipment(order) {
   return response.data;
 }
 
-module.exports = { createUpsShipment };
+module.exports = { createUpsShipment, getShipperFromStore };

@@ -25,4 +25,4 @@ async function getUpsAccessToken() {
   return response.data.access_token;
 }
 
-module.exports = { getUpsAccessToken, UPS_BASE_URL };
+module.exports = { getUpsAccessToken };

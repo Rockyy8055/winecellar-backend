@@ -469,6 +469,13 @@ router.post('/api/orders/create', requireAuthWithMessage('Authentication require
     const normalizedShippingAddress = isPickAndPay
       ? buildPickAndPayShippingAddress(normalizedPickupStore, shippingAddress)
       : normalizeShippingAddress(shippingAddress, billingDetails);
+
+    if (normalizedShippingAddress && !normalizedShippingAddress.storeName) {
+      const storeNameFromOrder = normalizedPickupStore?.storeName || shopLocation;
+      if (storeNameFromOrder) {
+        normalizedShippingAddress.storeName = storeNameFromOrder;
+      }
+    }
     const orderDoc = new OrderDetails({
       trackingCode: orderId,
       method: normalizedPaymentMethod.toLowerCase(),
@@ -494,15 +501,9 @@ router.post('/api/orders/create', requireAuthWithMessage('Authentication require
 
     const upsEnvStatus = {
       UPS_ENV: process.env.UPS_ENV || null,
-      UPS_BASE_URL: process.env.UPS_BASE_URL ? 'set' : 'missing',
       UPS_CLIENT_ID: process.env.UPS_CLIENT_ID ? 'set' : 'missing',
       UPS_CLIENT_SECRET: process.env.UPS_CLIENT_SECRET ? 'set' : 'missing',
       UPS_ACCOUNT_NUMBER: process.env.UPS_ACCOUNT_NUMBER ? 'set' : 'missing',
-      UPS_SHIPPER_NAME: process.env.UPS_SHIPPER_NAME ? 'set' : 'missing',
-      UPS_SHIPPER_LINE1: process.env.UPS_SHIPPER_LINE1 ? 'set' : 'missing',
-      UPS_SHIPPER_CITY: process.env.UPS_SHIPPER_CITY ? 'set' : 'missing',
-      UPS_SHIPPER_POSTAL_CODE: process.env.UPS_SHIPPER_POSTAL_CODE ? 'set' : 'missing',
-      UPS_SHIPPER_COUNTRY: process.env.UPS_SHIPPER_COUNTRY ? 'set' : 'missing',
     };
 
     const upsAddressMissing = [];
