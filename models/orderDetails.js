@@ -67,8 +67,11 @@ const orderDetailsSchema = new mongoose.Schema({
   },
   items: [
     {
+      productId: { type: mongoose.Schema.Types.ObjectId, ref: "Product" },
       name: { type: String },
       sku: { type: String },
+      size: { type: String },
+      sizeLabel: { type: String },
       qty: { type: Number },
       price: { type: Number },
     },

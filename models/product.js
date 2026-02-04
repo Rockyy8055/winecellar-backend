@@ -84,33 +84,34 @@ const productSchema = new mongoose.Schema({
     type: String,
     required: false,
   },
-  stock: {
-    type: Number,
-    required: false,
-    default: 0,
-  },
-  sizeStocks: {
+  sizes: {
     type: Object,
     default: () => createEmptySizeStocks(),
   },
+  totalStock: {
+    type: Number,
+    default: 0,
+  },
+  inStock: {
+    type: Boolean,
+    default: true,
+  },
 });
 
-// Pre-save middleware to normalize sizeStocks and sync total stock
+// Pre-save middleware to normalize sizes and sync stock flags
 productSchema.pre('save', function(next) {
   try {
-    if (this.isModified('sizeStocks') || this.isNew) {
-      const normalized = parseSizeStocksInput(this.sizeStocks, { rejectUnknown: true, fillMissing: true, coerce: 'strict' }) || createEmptySizeStocks();
-      this.sizeStocks = normalized;
+    const normalizedSizes = parseSizeStocksInput(this.sizes, {
+      rejectUnknown: true,
+      fillMissing: true,
+      coerce: 'strict',
+    }) || createEmptySizeStocks();
 
-      if (!this.isModified('stock') || this.stock === undefined || this.stock === null) {
-        this.stock = computeTotalStock(normalized);
-      }
-    }
+    this.sizes = normalizedSizes;
 
-    if (this.isModified('stock') || this.isNew) {
-      const num = Number(this.stock ?? 0);
-      this.stock = Number.isFinite(num) && num >= 0 ? Math.floor(num) : 0;
-    }
+    const computedTotal = computeTotalStock(normalizedSizes);
+    this.totalStock = computedTotal;
+    this.inStock = computedTotal > 0;
 
     next();
   } catch (err) {

@@ -11,21 +11,23 @@ const {
   createEmptySizeStocks,
 } = require('../utils/sizeStocks');
 
-function extractSizeStocksFromBody(body = {}) {
+function extractSizesFromBody(body = {}) {
   const extracted = {};
   if (!body || typeof body !== 'object') {
     return extracted;
   }
 
   for (const [key, value] of Object.entries(body)) {
-    const bracketMatch = key.match(/^sizeStocks\[([^\]]+)\]$/);
-    const dotMatch = key.match(/^sizeStocks\.([^\.]+)$/);
-    const rawSize = bracketMatch?.[1] || dotMatch?.[1];
+    const sizesBracket = key.match(/^sizes\[([^\]]+)\]$/);
+    const sizesDot = key.match(/^sizes\.([^\.]+)$/);
+    const legacyBracket = key.match(/^sizeStocks\[([^\]]+)\]$/);
+    const legacyDot = key.match(/^sizeStocks\.([^\.]+)$/);
+    const rawSize = sizesBracket?.[1] || sizesDot?.[1] || legacyBracket?.[1] || legacyDot?.[1];
     if (!rawSize) {
       continue;
     }
     const normalizedKey = normalizeSizeKey(rawSize);
-    if (SAFE_SIZE_KEYS.includes(normalizedKey)) {
+    if (normalizedKey) {
       extracted[normalizedKey] = value;
     }
   }
@@ -59,8 +61,8 @@ function formatProductResponse(doc) {
   const base = typeof doc.toObject === 'function' ? doc.toObject() : { ...doc };
   const productIdCandidate = base._id || base.ProductId || base.id;
   const productId = productIdCandidate ? String(productIdCandidate) : undefined;
-  const sizeStocksSource = doc.sizeStocks?.toObject?.() || base.sizeStocks || {};
-  const sizeStocks = normalizeSizeStocksForResponse(sizeStocksSource);
+  const sizesSource = doc.sizes?.toObject?.() || base.sizes || base.sizeStocks || {};
+  const sizes = normalizeSizeStocksForResponse(sizesSource);
 
   const rawImage = base.img || base.imageUrl || base.image || '';
   const publicImage = rawImage ? toPublicUrl(rawImage) : '';
@@ -70,7 +72,7 @@ function formatProductResponse(doc) {
     ProductId: productId || base.ProductId,
     img: publicImage,
     imageUrl: publicImage,
-    sizeStocks,
+    sizes,
   };
 }
 
@@ -80,11 +82,23 @@ function formatProductForResponse(doc) {
     return null;
   }
 
-  const totalStock = computeTotalStock(formatted.sizeStocks);
+  const totalStock = Number.isFinite(Number(formatted.totalStock))
+    ? Number(formatted.totalStock)
+    : computeTotalStock(formatted.sizes);
   const productId = formatted.ProductId || (formatted._id && String(formatted._id)) || formatted.id;
+  const inStock = typeof formatted.inStock === 'boolean' ? formatted.inStock : totalStock > 0;
+
+  const {
+    stock,
+    sizeStocks,
+    sizes,
+    totalStock: existingTotal,
+    inStock: existingInStock,
+    ...rest
+  } = formatted;
 
   return {
-    ...formatted,
+    ...rest,
     ProductId: productId,
     discount: formatted.discount ?? 'No discount',
     size: formatted.size ?? 'N/A',
@@ -92,8 +106,10 @@ function formatProductForResponse(doc) {
     Country: formatted.Country ?? 'Unknown Country',
     Region: formatted.Region ?? 'Unknown Region',
     brand: formatted.brand ?? 'Unknown Brand',
-    stock: Number.isFinite(Number(formatted.stock)) ? Number(formatted.stock) : totalStock,
-    sizeStocks: formatted.sizeStocks,
+    sizes,
+    sizeStocks: sizes, // backward compatibility for legacy consumers
+    totalStock,
+    inStock,
   };
 }
 
@@ -213,7 +229,7 @@ function normalizeTagsInput(raw) {
 }
 
 function buildProductPayloadFromBody(body = {}) {
-  const extractedSizeStocks = extractSizeStocksFromBody(body);
+  const extractedSizes = extractSizesFromBody(body);
   const payload = {
     name: body.name,
     desc: body.desc,
@@ -236,22 +252,18 @@ function buildProductPayloadFromBody(body = {}) {
     payload.price = price;
   }
 
-  // Handle sizeStocks if provided (multipart may send as JSON string)
-  const hasExtractedSizeStocks = Object.keys(extractedSizeStocks).length > 0;
-  const sizeStocksInput = body.sizeStocks !== undefined ? body.sizeStocks : (hasExtractedSizeStocks ? extractedSizeStocks : undefined);
-  if (sizeStocksInput !== undefined) {
-    const validation = validateSizeStocks(sizeStocksInput);
+  const rawSizesInput = (() => {
+    if (body.sizes !== undefined) return body.sizes;
+    if (body.sizeStocks !== undefined) return body.sizeStocks;
+    return Object.keys(extractedSizes).length > 0 ? extractedSizes : undefined;
+  })();
+
+  if (rawSizesInput !== undefined) {
+    const validation = validateSizeStocks(rawSizesInput);
     if (!validation.valid) {
       throw new Error(validation.error);
     }
-    payload.sizeStocks = validation.normalized;
-  }
-
-  const stock = coerceNumber(body.stock);
-  if (stock !== undefined) {
-    payload.stock = Math.max(0, Math.floor(stock));
-  } else if (payload.sizeStocks !== undefined) {
-    payload.stock = computeTotalStock(payload.sizeStocks);
+    payload.sizes = validation.normalized;
   }
 
   syncDescriptionFields(payload);

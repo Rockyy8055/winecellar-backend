@@ -1,13 +1,16 @@
 const express = require('express');
 const router = express.Router();
+const mongoose = require('mongoose');
 const { getOrder, updateOrderStatus, trackOrder, initializeOrderMetadata, emailOwnerOrderPlaced } = require('../controllers/orderController');
 const { requireAdmin } = require('../config/requireAdmin');
 const { sendMail, getEmailProvider } = require('../services/emailService');
 const OrderDetails = require('../models/orderDetails');
+const Product = require('../models/product');
 const { clearCartForUserId } = require('../controllers/cartController');
 const { updateOrderFromUPSTracking } = require('../services/upsTracking');
 const { requireAuth, optionalAuth, requireAuthWithMessage } = require('./userAuth');
 const { createUpsShipment, cancelUpsShipment } = require('../utils/upsShipment');
+const { normalizeSizeInput } = require('../utils/sizeStocks');
 
 const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
 const VALID_PAYMENT_METHODS = new Map([
@@ -38,13 +41,31 @@ function normalizeOrderItems(orderItems) {
   if (!Array.isArray(orderItems)) return [];
   return orderItems.reduce((acc, item) => {
     if (!item || typeof item !== 'object') return acc;
+
     const name = String(item.name || item.title || item.ProductName || item.productName || '').trim();
-    const qty = Number(item.qty ?? item.quantity ?? 0);
-    const price = Number(item.price ?? item.amount ?? 0);
+    const qtyValue = Number(item.qty ?? item.quantity ?? 0);
+    const qty = Number.isFinite(qtyValue) ? Math.floor(qtyValue) : NaN;
+    const priceValue = Number(item.price ?? item.amount ?? item.unitPrice ?? item.unit_price ?? 0);
+    const price = Number.isFinite(priceValue) ? priceValue : NaN;
+    const productIdRaw = item.productId ?? item.product_id ?? item.ProductId ?? item.productID ?? item.id;
+    const productId = productIdRaw != null ? String(productIdRaw).trim() : null;
+    const skuRaw = item.sku ?? item.SKU ?? item.productSku ?? item.productSKU ?? null;
+    const sizeRaw = item.size ?? item.selectedSize ?? item.productSize ?? item.sizeLabel ?? item.size_key ?? null;
+    const normalizedSize = sizeRaw ? normalizeSizeInput(sizeRaw) : '';
+
     if (!name || !Number.isFinite(qty) || qty <= 0 || !Number.isFinite(price) || price < 0) {
       return acc;
     }
-    acc.push({ name, qty, price });
+
+    acc.push({
+      productId,
+      name,
+      sku: skuRaw ? String(skuRaw).trim() : null,
+      size: normalizedSize || null,
+      sizeLabel: sizeRaw ? String(sizeRaw).trim() : null,
+      qty,
+      price,
+    });
     return acc;
   }, []);
 }
@@ -239,6 +260,76 @@ function computeTotals(items, opts = {}) {
   const calculatedTotal = round2(subtotal - discount + vat + shippingFee);
   const total = calculatedTotal;
   return { subtotal, discount, vat, shippingFee, total, isTradeCustomer: !!isTradeCustomer };
+}
+
+function createOrderError(statusCode, code, message, details = {}) {
+  const error = new Error(message);
+  error.statusCode = statusCode;
+  error.clientCode = code;
+  error.clientMessage = message;
+  error.details = details;
+  return error;
+}
+
+function stripUndefinedFields(obj = {}) {
+  return Object.fromEntries(Object.entries(obj).filter(([, value]) => value !== undefined));
+}
+
+async function restoreStockForOrder(orderDoc, session) {
+  if (!orderDoc || !Array.isArray(orderDoc.items) || !orderDoc.items.length) {
+    return [];
+  }
+
+  const restockDetails = [];
+  const now = new Date();
+
+  for (const [index, item] of orderDoc.items.entries()) {
+    const productId = item.productId || item.product_id || item.ProductId || item.product_id;
+    const sizeKey = item.size || item.sizeKey || item.size_key || null;
+    const qty = Number(item.qty || item.quantity || 0);
+
+    if (!productId || !mongoose.isValidObjectId(productId) || !sizeKey || !Number.isFinite(qty) || qty <= 0) {
+      restockDetails.push({ index, productId: productId || null, size: sizeKey || null, qty, skipped: true });
+      continue;
+    }
+
+    const updateResult = await Product.updateOne(
+      { _id: productId },
+      {
+        $inc: {
+          [`sizes.${sizeKey}`]: qty,
+          totalStock: qty,
+        },
+        $set: {
+          modified_at: now,
+        },
+      },
+      { session }
+    );
+
+    if (updateResult.modifiedCount === 0) {
+      restockDetails.push({ index, productId, size: sizeKey, qty, restored: false });
+      throw createOrderError(409, 'STOCK_RESTORE_CONFLICT', 'Unable to restore stock for one of the items', {
+        itemIndex: index,
+        productId,
+        size: sizeKey,
+        qty,
+      });
+    }
+
+    const product = await Product.findById(productId).session(session);
+    if (product) {
+      const newTotal = Number(product.totalStock || 0);
+      const desiredInStock = newTotal > 0;
+      if (product.inStock !== desiredInStock) {
+        await Product.updateOne({ _id: product._id }, { $set: { inStock: desiredInStock } }, { session });
+      }
+    }
+
+    restockDetails.push({ index, productId, size: sizeKey, qty, restored: true });
+  }
+
+  return restockDetails;
 }
 
 function sanitizeBillingDetails(details) {
@@ -454,6 +545,21 @@ router.post('/api/orders/create', requireAuthWithMessage('Authentication require
       return res.status(400).json({ error: 'orderItems must include at least one item with qty and price' });
     }
 
+    const invalidProductRefs = normalizedItems.reduce((acc, item, index) => {
+      if (!item.productId || !mongoose.isValidObjectId(item.productId)) {
+        acc.push({ index, productId: item.productId || null });
+      }
+      return acc;
+    }, []);
+
+    if (invalidProductRefs.length) {
+      return res.status(400).json({
+        error: 'INVALID_PRODUCT_REFERENCE',
+        message: 'One or more order items are missing a valid product reference',
+        details: { items: invalidProductRefs },
+      });
+    }
+
     const fallbackSubtotal = normalizedItems.reduce((sum, item) => sum + (item.price * item.qty), 0);
     const subtotalValue = Number(subtotal);
     const safeSubtotal = Number.isFinite(subtotalValue) && subtotalValue >= 0 ? subtotalValue : round2(fallbackSubtotal);
@@ -476,28 +582,112 @@ router.post('/api/orders/create', requireAuthWithMessage('Authentication require
         normalizedShippingAddress.storeName = storeNameFromOrder;
       }
     }
-    const orderDoc = new OrderDetails({
-      trackingCode: orderId,
-      method: normalizedPaymentMethod.toLowerCase(),
-      paymentMethod: normalizedPaymentMethod,
-      paymentReference: paymentReference ? String(paymentReference) : undefined,
-      user_id: userId,
-      customer: {
-        name: customerName,
-        email: customerEmail,
-      },
-      items: normalizedItems,
-      subtotal: safeSubtotal,
-      vat: safeTax,
-      total: safeTotal,
-      billingDetails: sanitizedBillingDetails,
-      pickupStore: normalizedPickupStore,
-      shippingAddress: normalizedShippingAddress,
-      shippingFee: 0,
-      emailProvider: getEmailProvider(),
-    });
-    initializeOrderMetadata(orderDoc);
-    await orderDoc.save();
+
+    let orderDoc;
+    let session;
+    try {
+      session = await mongoose.startSession();
+      session.startTransaction();
+
+      const orderItemsForDoc = [];
+      const now = new Date();
+
+      for (const [index, item] of normalizedItems.entries()) {
+        const sizeKey = item.size;
+        if (!sizeKey) {
+          throw createOrderError(400, 'SIZE_REQUIRED', 'Size is required for this product', {
+            index,
+            productId: item.productId,
+          });
+        }
+
+        const updateFilter = {
+          _id: item.productId,
+          [`sizes.${sizeKey}`]: { $gte: item.qty },
+          totalStock: { $gte: item.qty },
+        };
+
+        const updateDoc = {
+          $inc: {
+            [`sizes.${sizeKey}`]: -item.qty,
+            totalStock: -item.qty,
+          },
+          $set: {
+            modified_at: now,
+          },
+        };
+
+        const product = await Product.findOneAndUpdate(updateFilter, updateDoc, {
+          new: true,
+          session,
+        });
+
+        if (!product) {
+          throw createOrderError(400, 'OUT_OF_STOCK', "THAT'S ALL WE HAVE FOR NOW", {
+            index,
+            productId: item.productId,
+            size: sizeKey,
+            requested: item.qty,
+          });
+        }
+
+        const newTotal = Number(product.totalStock || 0);
+        const desiredInStock = newTotal > 0;
+        if (product.inStock !== desiredInStock) {
+          await Product.updateOne({ _id: product._id }, { $set: { inStock: desiredInStock } }, { session });
+          product.inStock = desiredInStock;
+        }
+
+        const orderItemDoc = stripUndefinedFields({
+          productId: product._id,
+          name: item.name || product.name,
+          sku: item.sku || product.SKU || product.sku,
+          size: sizeKey,
+          sizeLabel: item.sizeLabel || sizeKey,
+          qty: item.qty,
+          price: item.price,
+        });
+
+        orderItemsForDoc.push(orderItemDoc);
+      }
+
+      orderDoc = new OrderDetails({
+        trackingCode: orderId,
+        method: normalizedPaymentMethod.toLowerCase(),
+        paymentMethod: normalizedPaymentMethod,
+        paymentReference: paymentReference ? String(paymentReference) : undefined,
+        user_id: userId,
+        customer: {
+          name: customerName,
+          email: customerEmail,
+        },
+        items: orderItemsForDoc,
+        subtotal: safeSubtotal,
+        vat: safeTax,
+        total: safeTotal,
+        billingDetails: sanitizedBillingDetails,
+        pickupStore: normalizedPickupStore,
+        shippingAddress: normalizedShippingAddress,
+        shippingFee: 0,
+        emailProvider: getEmailProvider(),
+      });
+
+      initializeOrderMetadata(orderDoc);
+      await orderDoc.save({ session });
+
+      await session.commitTransaction();
+    } catch (transactionError) {
+      if (session) {
+        try {
+          await session.abortTransaction();
+        } catch (_) {}
+      }
+      throw transactionError;
+    } finally {
+      if (session) {
+        session.endSession();
+      }
+    }
 
     const upsEnvStatus = {
       UPS_ENV: process.env.UPS_ENV || null,
@@ -629,7 +819,14 @@ router.post('/api/orders/create', requireAuthWithMessage('Authentication require
     });
   } catch (err) {
     console.error('order creation failed:', err);
-    return res.status(500).json({ error: 'INTERNAL_ERROR' });
+    const statusCode = err && Number.isInteger(err.statusCode) ? err.statusCode : 500;
+    const clientCode = err?.clientCode || (statusCode >= 500 ? 'INTERNAL_ERROR' : 'ORDER_ERROR');
+    const message = err?.clientMessage || err?.message || 'An unexpected error occurred while creating the order.';
+    const payload = { error: clientCode, message };
+    if (err?.details) {
+      payload.details = err.details;
+    }
+    return res.status(statusCode).json(payload);
   }
 });
 
@@ -736,12 +933,34 @@ router.post('/api/orders/cancel/:trackingCode', optionalAuth, async (req, res) =
       return res.status(409).json({ message: 'Cannot cancel at this stage' });
     }
 
-    order.status = 'CANCELLED';
-    order.statusHistory = order.statusHistory || [];
-    order.statusHistory.push({ status: 'CANCELLED', at: new Date(), note: 'Customer cancelled' });
+    const session = await mongoose.startSession();
+    let restockSummary = [];
+    try {
+      session.startTransaction();
 
-    // Optional: restock inventory here if your system decremented stock on order creation
-    await order.save();
+      restockSummary = await restoreStockForOrder(order, session);
+
+      order.status = 'CANCELLED';
+      order.statusHistory = order.statusHistory || [];
+      order.statusHistory.push({ status: 'CANCELLED', at: new Date(), note: 'Customer cancelled' });
+      await order.save({ session });
+
+      await session.commitTransaction();
+    } catch (restoreErr) {
+      if (session.inTransaction()) {
+        await session.abortTransaction();
+      }
+      console.error('order cancellation stock restore failed:', {
+        trackingCode: order.trackingCode,
+        message: restoreErr?.message,
+        stack: restoreErr?.stack,
+      });
+      const err = createOrderError(500, 'STOCK_RESTORE_FAILED', 'Failed to restore stock for cancelled order');
+      err.details = { trackingCode: order.trackingCode };
+      throw err;
+    } finally {
+      session.endSession();
+    }
 
     if (order.carrier === 'UPS' && order.upsStatus === 'CREATED' && order.upsVoidStatus !== 'VOIDED') {
       try {

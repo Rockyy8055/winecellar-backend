@@ -1,17 +1,29 @@
-const SAFE_SIZE_KEYS = ['1.5LTR', '1LTR', '75CL', '70CL', '35CL', '20CL', '10CL', '5CL'];
+const SAFE_SIZE_KEYS = ['1_5_LTR', '1_LTR', '75_CL', '70_CL', '35_CL', '20_CL', '10_CL', '5_CL'];
+
 const SIZE_ALIAS_MAP = new Map([
-  ['1500ML', '1.5LTR'],
-  ['1.5L', '1.5LTR'],
-  ['150CL', '1.5LTR'],
-  ['1000ML', '1LTR'],
-  ['1L', '1LTR'],
-  ['100CL', '1LTR'],
-  ['750ML', '75CL'],
-  ['700ML', '70CL'],
-  ['350ML', '35CL'],
-  ['200ML', '20CL'],
-  ['100ML', '10CL'],
-  ['50ML', '5CL'],
+  ['1500ML', '1_5_LTR'],
+  ['1.5LTR', '1_5_LTR'],
+  ['1.5L', '1_5_LTR'],
+  ['1 5 LTR', '1_5_LTR'],
+  ['1-5-LTR', '1_5_LTR'],
+  ['150CL', '1_5_LTR'],
+  ['1500', '1_5_LTR'],
+  ['1000ML', '1_LTR'],
+  ['1LTR', '1_LTR'],
+  ['1L', '1_LTR'],
+  ['100CL', '1_LTR'],
+  ['750ML', '75_CL'],
+  ['75CL', '75_CL'],
+  ['700ML', '70_CL'],
+  ['70CL', '70_CL'],
+  ['350ML', '35_CL'],
+  ['35CL', '35_CL'],
+  ['200ML', '20_CL'],
+  ['20CL', '20_CL'],
+  ['100ML', '10_CL'],
+  ['10CL', '10_CL'],
+  ['50ML', '5_CL'],
+  ['5CL', '5_CL'],
 ]);
 
 function normalizeSizeKey(raw) {
@@ -19,25 +31,26 @@ function normalizeSizeKey(raw) {
     return '';
   }
 
-  const upper = String(raw).toUpperCase().replace(/LITRES?/g, 'LTR').replace(/\s+/g, '');
-  let result = '';
+  let normalized = String(raw)
+    .toUpperCase()
+    .replace(/LITRES?/g, 'LTR')
+    .replace(/\s+/g, '')
+    .replace(/-/g, '_')
+    .replace(/\./g, '_');
 
-  for (let i = 0; i < upper.length; i += 1) {
-    const char = upper[i];
-
-    if (char === '.') {
-      const prev = upper[i - 1];
-      const next = upper[i + 1];
-      if (isDigit(prev) && isDigit(next)) {
-        result += char;
-      }
-      continue;
-    }
-
-    result += char;
+  if (normalized.endsWith('LTR') && !normalized.endsWith('_LTR')) {
+    normalized = `${normalized.slice(0, -3)}_LTR`;
   }
 
-  return result;
+  if (normalized.endsWith('CL') && !normalized.endsWith('_CL')) {
+    normalized = `${normalized.slice(0, -2)}_CL`;
+  }
+
+  if (SAFE_SIZE_KEYS.includes(normalized)) {
+    return normalized;
+  }
+
+  return SIZE_ALIAS_MAP.get(normalized) || SIZE_ALIAS_MAP.get(normalized.replace(/_/g, '')) || '';
 }
 
 function parseSizeStocksInput(raw, options = {}) {
@@ -65,15 +78,16 @@ function parseSizeStocksInput(raw, options = {}) {
       continue;
     }
 
-    if (!SAFE_SIZE_KEYS.includes(key)) {
+    const canonicalKey = SAFE_SIZE_KEYS.includes(key) ? key : SIZE_ALIAS_MAP.get(key);
+    if (!canonicalKey) {
       if (rejectUnknown) {
         throw new Error(`Invalid size: ${key}`);
       }
       continue;
     }
 
-    const quantity = coerceQuantity(rawValue, key, coerce);
-    normalized[key] = quantity;
+    const quantity = coerceQuantity(rawValue, canonicalKey, coerce);
+    normalized[canonicalKey] = quantity;
   }
 
   return fillMissing ? fillMissingKeys(normalized) : normalized;
