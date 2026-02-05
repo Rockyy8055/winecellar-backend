@@ -86,6 +86,7 @@ const productSchema = new mongoose.Schema({
   },
   sizes: {
     type: Object,
+    alias: "sizeStocks",
     default: () => createEmptySizeStocks(),
   },
   totalStock: {
