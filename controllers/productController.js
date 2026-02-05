@@ -377,8 +377,10 @@ const adminUpdateProduct = async (req, res) => {
     }
 
     // If sizeStocks was supplied but stock omitted, compute stock for query update
-    if (update.sizeStocks !== undefined && update.stock === undefined) {
-      update.stock = computeTotalStock(update.sizeStocks);
+    if (update.sizes !== undefined) {
+      const computedTotal = computeTotalStock(update.sizes);
+      update.totalStock = computedTotal;
+      update.inStock = computedTotal > 0;
     }
 
     update.modified_at = new Date();
@@ -418,7 +420,7 @@ const adminUpdateProductStock = async (req, res) => {
     const id = req.params.id;
     let { stock, delta, sizeStocks } = req.body || {};
     if (sizeStocks === undefined) {
-      const extracted = extractSizeStocksFromBody(req.body || {});
+      const extracted = extractSizesFromBody(req.body || {});
       if (Object.keys(extracted).length > 0) {
         sizeStocks = extracted;
       }
@@ -434,22 +436,26 @@ const adminUpdateProductStock = async (req, res) => {
         return res.status(400).json({ error: validation.error });
       }
       
-      // Update sizeStocks
-      const currentSizeStocks = normalizeSizeStocksForResponse(product.sizeStocks?.toObject?.() || product.sizeStocks || {});
+      // Update sizes (per-size stock)
+      const currentSizeStocks = normalizeSizeStocksForResponse(product.sizes?.toObject?.() || product.sizes || {});
       const updates = validation.normalized;
       const updatedSizeStocks = { ...currentSizeStocks };
       Object.entries(updates).forEach(([key, value]) => {
         updatedSizeStocks[key] = Math.max(0, Math.floor(Number(value) || 0));
       });
-      product.sizeStocks = updatedSizeStocks;
-      product.stock = computeTotalStock(updatedSizeStocks);
+      product.sizes = updatedSizeStocks;
+      product.totalStock = computeTotalStock(updatedSizeStocks);
+      product.inStock = product.totalStock > 0;
     } else if (delta !== undefined) {
-      const next = Number(product.stock || 0) + Number(delta);
-      product.stock = Math.max(0, Math.floor(next));
+      const current = Number(product.totalStock || 0);
+      const next = current + Number(delta);
+      product.totalStock = Math.max(0, Math.floor(next));
+      product.inStock = product.totalStock > 0;
     } else if (stock !== undefined) {
       stock = Number(stock);
       if (!Number.isFinite(stock) || stock < 0) return res.status(400).json({ error: 'Invalid stock' });
-      product.stock = Math.floor(stock);
+      product.totalStock = Math.floor(stock);
+      product.inStock = product.totalStock > 0;
     } else {
       return res.status(400).json({ error: 'Provide stock, delta, or sizeStocks' });
     }
@@ -523,8 +529,10 @@ const adminBatchUpdateSizeStocks = async (req, res) => {
           continue;
         }
 
-        // Update sizeStocks
-        product.sizeStocks = validation.normalized;
+        // Update sizes (per-size stock)
+        product.sizes = validation.normalized;
+        product.totalStock = computeTotalStock(validation.normalized);
+        product.inStock = product.totalStock > 0;
         product.modified_at = new Date();
         await product.save();
 
@@ -634,7 +642,7 @@ const getBestSellers = async (req, res) => {
 
     const normalized = rows.map((r) => {
       const p = Array.isArray(r.product) && r.product.length ? r.product[0] : {};
-      const sizeStocks = normalizeSizeStocksForResponse(p.sizeStocks?.toObject?.() || p.sizeStocks || {});
+      const sizeStocks = normalizeSizeStocksForResponse(p.sizes?.toObject?.() || p.sizes || p.sizeStocks || {});
       return {
         id: (p._id && String(p._id)) || p.id || p.ProductId || r._id,
         ProductId: p.ProductId || (p._id && String(p._id)) || r._id,
@@ -645,7 +653,7 @@ const getBestSellers = async (req, res) => {
         img: toPublicUrl(p.img || p.image || p.imageUrl || ''),
         imageUrl: toPublicUrl(p.imageUrl || p.img || ''),
         category: p.category || [],
-        stock: Number(p.stock ?? 0),
+        stock: Number(p.totalStock ?? p.stock ?? 0),
         sizeStocks,
         totalQty: r.totalQty,
         totalSales: Number(r.totalSales || 0)
@@ -680,7 +688,7 @@ const getBestSellers = async (req, res) => {
 
       const fallback = allTime.map((r) => {
         const p = Array.isArray(r.product) && r.product.length ? r.product[0] : {};
-        const sizeStocks = normalizeSizeStocksForResponse(p.sizeStocks?.toObject?.() || p.sizeStocks || {});
+        const sizeStocks = normalizeSizeStocksForResponse(p.sizes?.toObject?.() || p.sizes || p.sizeStocks || {});
         return {
           id: (p._id && String(p._id)) || p.id || p.ProductId || r._id,
           ProductId: p.ProductId || (p._id && String(p._id)) || r._id,
@@ -691,7 +699,7 @@ const getBestSellers = async (req, res) => {
           img: p.img || p.image || p.imageUrl || '',
           imageUrl: p.imageUrl || p.img || '',
           category: p.category || [],
-          stock: Number(p.stock ?? 0),
+          stock: Number(p.totalStock ?? p.stock ?? 0),
           sizeStocks
         };
       });
