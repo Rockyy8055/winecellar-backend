@@ -11,6 +11,43 @@ const {
   createEmptySizeStocks,
 } = require('../utils/sizeStocks');
 
+function normalizeCategoryValue(value) {
+  return String(value ?? '').trim().toUpperCase();
+}
+
+function getAllowedSizeKeysForCategories(categories = []) {
+  const normalized = Array.isArray(categories)
+    ? categories.map(normalizeCategoryValue).filter(Boolean)
+    : [normalizeCategoryValue(categories)].filter(Boolean);
+
+  if (normalized.includes('BEER')) {
+    return ['35_CL'];
+  }
+  if (normalized.includes('WINE')) {
+    return ['75_CL'];
+  }
+  return SAFE_SIZE_KEYS;
+}
+
+function ensureSizesAllowedForCategory(categories, sizeStocksInput, label) {
+  if (!sizeStocksInput || typeof sizeStocksInput !== 'object') {
+    return;
+  }
+
+  const allowed = new Set(getAllowedSizeKeysForCategories(categories));
+  const parsed = parseSizeStocksInput(sizeStocksInput, {
+    rejectUnknown: true,
+    fillMissing: false,
+    coerce: 'soft',
+  }) || {};
+
+  const providedKeys = Object.keys(parsed);
+  const disallowed = providedKeys.filter((k) => !allowed.has(k));
+  if (disallowed.length > 0) {
+    throw new Error(`${label}: sizes not allowed for this category: ${disallowed.join(', ')}`);
+  }
+}
+
 function extractSizesFromBody(body = {}) {
   const extracted = {};
   if (!body || typeof body !== 'object') {
@@ -265,6 +302,7 @@ function buildProductPayloadFromBody(body = {}) {
   })();
 
   if (rawSizesInput !== undefined) {
+    ensureSizesAllowedForCategory(payload.category ?? body.category, rawSizesInput, 'Invalid sizeStocks');
     const validation = validateSizeStocks(rawSizesInput);
     if (!validation.valid) {
       throw new Error(validation.error);
@@ -334,7 +372,15 @@ const deleteAllProducts = async (req, res) => {
 const adminListProducts = async (req, res) => {
   try {
     const q = (req.query.q || '').trim();
-    const filter = q ? { name: { $regex: q, $options: 'i' } } : {};
+    const category = (req.query.category || '').trim();
+    const filter = {};
+    if (q) {
+      filter.name = { $regex: q, $options: 'i' };
+    }
+    if (category) {
+      const escaped = category.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      filter.category = { $regex: `^${escaped}$`, $options: 'i' };
+    }
     const items = await Product.find(filter).sort({ modified_at: -1 });
     const formattedItems = items.map(formatProductForResponse).filter(Boolean);
     res.json(formattedItems);
@@ -384,6 +430,7 @@ const adminUpdateProduct = async (req, res) => {
 
     // If sizeStocks was supplied but stock omitted, compute stock for query update
     if (update.sizes !== undefined) {
+      ensureSizesAllowedForCategory(update.category ?? existingProduct.category, update.sizes, 'Invalid sizes');
       const computedTotal = computeTotalStock(update.sizes);
       update.totalStock = computedTotal;
       update.inStock = computedTotal > 0;
@@ -437,8 +484,17 @@ const adminUpdateProductStock = async (req, res) => {
     const product = await Product.findById(id);
     if (!product) return res.status(404).json({ error: 'Not found' });
 
+    console.log('[stock-update] incoming', {
+      id,
+      hasSizesPayload: normalizedSizeInput !== undefined,
+      stock,
+      delta,
+      category: product.category,
+    });
+
     // Handle sizeStocks updates
     if (normalizedSizeInput !== undefined) {
+      ensureSizesAllowedForCategory(product.category, normalizedSizeInput, 'Invalid sizes');
       const validation = validateSizeStocks(normalizedSizeInput, { fillMissing: false });
       if (!validation.valid) {
         return res.status(400).json({ error: validation.error });
@@ -453,6 +509,13 @@ const adminUpdateProductStock = async (req, res) => {
       Object.entries(updates).forEach(([key, value]) => {
         updatedSizeStocks[key] = Math.max(0, Math.floor(Number(value) || 0));
       });
+
+      console.log('[stock-update] before-save sizes', {
+        id,
+        updates,
+        merged: updatedSizeStocks,
+      });
+
       product.sizes = updatedSizeStocks;
       product.totalStock = computeTotalStock(updatedSizeStocks);
       product.inStock = product.totalStock > 0;
@@ -472,9 +535,19 @@ const adminUpdateProductStock = async (req, res) => {
 
     product.modified_at = new Date();
     await product.save();
+
+    console.log('[stock-update] after-save sizes', {
+      id,
+      sizes: product.sizes,
+      totalStock: product.totalStock,
+      inStock: product.inStock,
+    });
     
     res.json(formatProductForResponse(product));
   } catch (e) {
+    if (String(e?.message || '').includes('sizes not allowed for this category')) {
+      return res.status(400).json({ error: e.message });
+    }
     res.status(500).json({ error: e.message });
   }
 };
@@ -538,6 +611,13 @@ const adminBatchUpdateSizeStocks = async (req, res) => {
         const product = await Product.findById(id);
         if (!product) {
           errors.push({ id, error: 'Product not found' });
+          continue;
+        }
+
+        try {
+          ensureSizesAllowedForCategory(product.category, sizePayload, 'Invalid sizes');
+        } catch (e) {
+          errors.push({ id, error: e.message });
           continue;
         }
 
