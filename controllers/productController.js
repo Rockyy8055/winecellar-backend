@@ -22,13 +22,19 @@ function extractSizesFromBody(body = {}) {
     const sizesDot = key.match(/^sizes\.([^\.]+)$/);
     const legacyBracket = key.match(/^sizeStocks\[([^\]]+)\]$/);
     const legacyDot = key.match(/^sizeStocks\.([^\.]+)$/);
-    const rawSize = sizesBracket?.[1] || sizesDot?.[1] || legacyBracket?.[1] || legacyDot?.[1];
+    const directMatch = normalizeSizeKey(key);
+    const rawSize = sizesBracket?.[1] || sizesDot?.[1] || legacyBracket?.[1] || legacyDot?.[1] || (directMatch ? key : undefined);
     if (!rawSize) {
       continue;
     }
     const normalizedKey = normalizeSizeKey(rawSize);
     if (normalizedKey) {
       extracted[normalizedKey] = value;
+      continue;
+    }
+
+    if (directMatch) {
+      extracted[directMatch] = value;
     }
   }
 
@@ -418,11 +424,13 @@ const adminUpdateProduct = async (req, res) => {
 const adminUpdateProductStock = async (req, res) => {
   try {
     const id = req.params.id;
-    let { stock, delta, sizeStocks } = req.body || {};
-    if (sizeStocks === undefined) {
+    let { stock, delta, sizeStocks, sizes } = req.body || {};
+
+    let normalizedSizeInput = sizeStocks !== undefined ? sizeStocks : sizes;
+    if (normalizedSizeInput === undefined) {
       const extracted = extractSizesFromBody(req.body || {});
       if (Object.keys(extracted).length > 0) {
-        sizeStocks = extracted;
+        normalizedSizeInput = extracted;
       }
     }
 
@@ -430,14 +438,16 @@ const adminUpdateProductStock = async (req, res) => {
     if (!product) return res.status(404).json({ error: 'Not found' });
 
     // Handle sizeStocks updates
-    if (sizeStocks !== undefined) {
-      const validation = validateSizeStocks(sizeStocks, { fillMissing: false });
+    if (normalizedSizeInput !== undefined) {
+      const validation = validateSizeStocks(normalizedSizeInput, { fillMissing: false });
       if (!validation.valid) {
         return res.status(400).json({ error: validation.error });
       }
       
       // Update sizes (per-size stock)
-      const currentSizeStocks = normalizeSizeStocksForResponse(product.sizes?.toObject?.() || product.sizes || {});
+      const currentSizeStocks = normalizeSizeStocksForResponse(
+        product.sizes?.toObject?.() || product.sizes || product.sizeStocks?.toObject?.() || product.sizeStocks || {}
+      );
       const updates = validation.normalized;
       const updatedSizeStocks = { ...currentSizeStocks };
       Object.entries(updates).forEach(([key, value]) => {
@@ -457,7 +467,7 @@ const adminUpdateProductStock = async (req, res) => {
       product.totalStock = Math.floor(stock);
       product.inStock = product.totalStock > 0;
     } else {
-      return res.status(400).json({ error: 'Provide stock, delta, or sizeStocks' });
+      return res.status(400).json({ error: 'Provide stock, delta, or sizeStocks/sizes' });
     }
 
     product.modified_at = new Date();
@@ -504,20 +514,22 @@ const adminBatchUpdateSizeStocks = async (req, res) => {
 
     for (const update of updates) {
       try {
-        const { id, sizeStocks } = update;
+        const { id, sizeStocks, sizes } = update;
         
         if (!id) {
           errors.push({ id, error: 'Product ID is required' });
           continue;
         }
 
-        if (!sizeStocks) {
-          errors.push({ id, error: 'sizeStocks is required' });
+        const sizePayload = sizeStocks !== undefined ? sizeStocks : sizes;
+
+        if (!sizePayload) {
+          errors.push({ id, error: 'sizeStocks (or sizes) is required' });
           continue;
         }
 
         // Validate sizeStocks
-        const validation = validateSizeStocks(sizeStocks);
+        const validation = validateSizeStocks(sizePayload);
         if (!validation.valid) {
           errors.push({ id, error: validation.error });
           continue;
