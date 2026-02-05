@@ -7,6 +7,7 @@ const {
   normalizeSizeKey,
   parseSizeStocksInput,
   normalizeSizeStocksForResponse,
+  toDisplaySizeStocks,
   computeTotalStock,
   createEmptySizeStocks,
 } = require('../utils/sizeStocks');
@@ -140,6 +141,8 @@ function formatProductForResponse(doc) {
     ...rest
   } = formatted;
 
+  const sizeStocksDisplay = toDisplaySizeStocks(sizes);
+
   return {
     ...rest,
     ProductId: productId,
@@ -150,7 +153,7 @@ function formatProductForResponse(doc) {
     Region: formatted.Region ?? 'Unknown Region',
     brand: formatted.brand ?? 'Unknown Brand',
     sizes,
-    sizeStocks: sizes, // backward compatibility for legacy consumers
+    sizeStocks: sizeStocksDisplay, // backward compatibility for legacy consumers using display keys
     totalStock,
     inStock,
   };

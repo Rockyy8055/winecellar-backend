@@ -1,5 +1,16 @@
 const SAFE_SIZE_KEYS = ['1_5_LTR', '1_LTR', '75_CL', '70_CL', '35_CL', '20_CL', '10_CL', '5_CL'];
 
+const DISPLAY_SIZE_KEY_MAP = {
+  '1_5_LTR': '1.5LTR',
+  '1_LTR': '1LTR',
+  '75_CL': '75CL',
+  '70_CL': '70CL',
+  '35_CL': '35CL',
+  '20_CL': '20CL',
+  '10_CL': '10CL',
+  '5_CL': '5CL',
+};
+
 const SIZE_ALIAS_MAP = new Map([
   ['1500ML', '1_5_LTR'],
   ['1.5LTR', '1_5_LTR'],
@@ -115,6 +126,16 @@ function computeTotalStock(sizeStocks = {}) {
   return SAFE_SIZE_KEYS.reduce((total, key) => total + (normalized[key] ?? 0), 0);
 }
 
+function toDisplaySizeStocks(sizeStocks = {}) {
+  const normalized = parseSizeStocksInput(sizeStocks, { rejectUnknown: false, fillMissing: true, coerce: 'soft' }) || createEmptySizeStocks();
+  const result = {};
+  SAFE_SIZE_KEYS.forEach((canonicalKey) => {
+    const displayKey = DISPLAY_SIZE_KEY_MAP[canonicalKey] || canonicalKey;
+    result[displayKey] = normalized[canonicalKey] ?? 0;
+  });
+  return result;
+}
+
 function createEmptySizeStocks() {
   return fillMissingKeys({});
 }
@@ -228,6 +249,7 @@ module.exports = {
   normalizeSizeStocksForResponse,
   normalizeSizeInput,
   computeTotalStock,
+  toDisplaySizeStocks,
   createEmptySizeStocks,
   fillMissingKeys,
 };
