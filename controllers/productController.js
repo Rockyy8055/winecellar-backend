@@ -43,7 +43,13 @@ function ensureSizesAllowedForCategory(categories, sizeStocksInput, label) {
   }) || {};
 
   const providedKeys = Object.keys(parsed);
-  const disallowed = providedKeys.filter((k) => !allowed.has(k));
+  const disallowed = providedKeys.filter((k) => {
+    if (allowed.has(k)) {
+      return false;
+    }
+    const qty = Number(parsed[k] ?? 0);
+    return Number.isFinite(qty) && qty > 0;
+  });
   if (disallowed.length > 0) {
     throw new Error(`${label}: sizes not allowed for this category: ${disallowed.join(', ')}`);
   }
