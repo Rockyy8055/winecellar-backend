@@ -336,6 +336,31 @@ async function attemptRefundForPaymentReference(paymentReference) {
   }
 }
 
+async function verifyStripePaymentSucceeded(paymentReference) {
+  if (!stripe) {
+    throw createOrderError(500, 'PAYMENT_NOT_CONFIGURED', 'Payment system is not configured');
+  }
+
+  const ref = String(paymentReference || '').trim();
+  if (!ref || !ref.startsWith('pi_')) {
+    throw createOrderError(400, 'PAYMENT_REFERENCE_REQUIRED', 'Valid payment reference is required');
+  }
+
+  let paymentIntent;
+  try {
+    paymentIntent = await stripe.paymentIntents.retrieve(ref);
+  } catch (e) {
+    throw createOrderError(400, 'PAYMENT_REFERENCE_INVALID', 'Unable to verify payment reference');
+  }
+
+  const status = paymentIntent?.status;
+  if (status !== 'succeeded') {
+    throw createOrderError(400, 'PAYMENT_NOT_COMPLETED', 'Payment is not completed');
+  }
+
+  return paymentIntent;
+}
+
 function stripUndefinedFields(obj = {}) {
   return Object.fromEntries(Object.entries(obj).filter(([, value]) => value !== undefined));
 }
@@ -599,6 +624,11 @@ router.post('/api/orders/create', requireAuthWithMessage('Authentication require
     const normalizedPaymentMethod = normalizePaymentMethod(paymentMethod);
     if (!normalizedPaymentMethod) {
       return res.status(400).json({ error: 'paymentMethod must be one of Debit Card | Credit Card | PayPal | Pick & Pay' });
+    }
+
+    const stripeGuardedMethods = new Set(['Credit Card', 'Debit Card']);
+    if (stripeGuardedMethods.has(normalizedPaymentMethod)) {
+      await verifyStripePaymentSucceeded(paymentReference);
     }
 
     // Idempotency: prevent duplicate emails/orders for the same payment reference

@@ -45,6 +45,8 @@ function getShipperFromStore(storeName) {
 
   const name = String(storeName).toLowerCase();
 
+  const defaultStore = String(process.env.UPS_DEFAULT_STORE || process.env.DEFAULT_UPS_STORE || '').trim().toLowerCase();
+
   if (name.includes('dalston')) {
     return {
       Name: 'WineCellar Dalston',
@@ -65,7 +67,25 @@ function getShipperFromStore(storeName) {
     };
   }
 
-  throw new Error('Invalid store location');
+  if (defaultStore) {
+    if (defaultStore.includes('stoke')) {
+      return {
+        Name: 'WineCellar Stoke Newington',
+        AddressLine: ['164 Stoke Newington Road'],
+        City: 'London',
+        PostalCode: 'N16 7UY',
+        CountryCode: 'GB',
+      };
+    }
+  }
+
+  return {
+    Name: 'WineCellar Dalston',
+    AddressLine: ['536 Kingsland Road'],
+    City: 'London',
+    PostalCode: 'E8 4AH',
+    CountryCode: 'GB',
+  };
 }
 
 function resolveStoreNameFromOrder(order) {
