@@ -70,6 +70,37 @@ function normalizeOrderItems(orderItems) {
   }, []);
 }
 
+function buildSizeKeyCandidates(sizeRaw, canonicalKey) {
+  const candidates = new Set();
+  if (canonicalKey) {
+    candidates.add(canonicalKey);
+  }
+  if (sizeRaw) {
+    const raw = String(sizeRaw).trim();
+    if (raw) {
+      candidates.add(raw);
+      candidates.add(raw.toUpperCase());
+      candidates.add(raw.toUpperCase().replace(/\s+/g, ''));
+    }
+  }
+  // common legacy variant: 70_CL -> 70CL, 1_LTR -> 1LTR
+  if (canonicalKey) {
+    candidates.add(String(canonicalKey).replace(/_/g, ''));
+  }
+  return Array.from(candidates).filter(Boolean);
+}
+
+function resolveExistingSizeKey(productDoc, sizeRaw, canonicalKey) {
+  const sizesObj = productDoc?.sizes?.toObject?.() || productDoc?.sizes || {};
+  const candidates = buildSizeKeyCandidates(sizeRaw, canonicalKey);
+  for (const key of candidates) {
+    if (Object.prototype.hasOwnProperty.call(sizesObj, key)) {
+      return key;
+    }
+  }
+  return canonicalKey || candidates[0] || '';
+}
+
 router.get('/api/my-orders', requireAuth, async (req, res) => {
   try {
     const orders = await OrderDetails.find({ user_id: req.user._id })
@@ -293,11 +324,18 @@ async function restoreStockForOrder(orderDoc, session) {
       continue;
     }
 
+    const productBefore = await Product.findById(productId).session(session);
+    if (!productBefore) {
+      restockDetails.push({ index, productId, size: sizeKey, qty, restored: false });
+      continue;
+    }
+
+    const resolvedSizeKey = resolveExistingSizeKey(productBefore, item.sizeLabel, sizeKey);
     const updateResult = await Product.updateOne(
       { _id: productId },
       {
         $inc: {
-          [`sizes.${sizeKey}`]: qty,
+          [`sizes.${resolvedSizeKey}`]: qty,
           totalStock: qty,
         },
         $set: {
@@ -312,7 +350,7 @@ async function restoreStockForOrder(orderDoc, session) {
       throw createOrderError(409, 'STOCK_RESTORE_CONFLICT', 'Unable to restore stock for one of the items', {
         itemIndex: index,
         productId,
-        size: sizeKey,
+        size: resolvedSizeKey,
         qty,
       });
     }
@@ -593,23 +631,47 @@ router.post('/api/orders/create', requireAuthWithMessage('Authentication require
       const now = new Date();
 
       for (const [index, item] of normalizedItems.entries()) {
-        const sizeKey = item.size;
-        if (!sizeKey) {
+        const canonicalSizeKey = item.size;
+        if (!canonicalSizeKey) {
           throw createOrderError(400, 'SIZE_REQUIRED', 'Size is required for this product', {
             index,
             productId: item.productId,
           });
         }
 
+        const productBefore = await Product.findById(item.productId).session(session);
+        if (!productBefore) {
+          throw createOrderError(400, 'OUT_OF_STOCK', "THAT'S ALL WE HAVE FOR NOW", {
+            index,
+            productId: item.productId,
+            size: canonicalSizeKey,
+            requested: item.qty,
+          });
+        }
+
+        const resolvedSizeKey = resolveExistingSizeKey(productBefore, item.sizeLabel, canonicalSizeKey);
+        const currentQty = Number(
+          (productBefore.sizes?.toObject?.() || productBefore.sizes || {})[resolvedSizeKey] ?? 0
+        );
+        const currentTotal = Number(productBefore.totalStock ?? 0);
+        if (!Number.isFinite(currentQty) || currentQty < item.qty || !Number.isFinite(currentTotal) || currentTotal < item.qty) {
+          throw createOrderError(400, 'OUT_OF_STOCK', "THAT'S ALL WE HAVE FOR NOW", {
+            index,
+            productId: item.productId,
+            size: canonicalSizeKey,
+            requested: item.qty,
+          });
+        }
+
         const updateFilter = {
           _id: item.productId,
-          [`sizes.${sizeKey}`]: { $gte: item.qty },
+          [`sizes.${resolvedSizeKey}`]: { $gte: item.qty },
           totalStock: { $gte: item.qty },
         };
 
         const updateDoc = {
           $inc: {
-            [`sizes.${sizeKey}`]: -item.qty,
+            [`sizes.${resolvedSizeKey}`]: -item.qty,
             totalStock: -item.qty,
           },
           $set: {
@@ -617,16 +679,22 @@ router.post('/api/orders/create', requireAuthWithMessage('Authentication require
           },
         };
 
-        const product = await Product.findOneAndUpdate(updateFilter, updateDoc, {
-          new: true,
-          session,
-        });
-
-        if (!product) {
+        const updateResult = await Product.updateOne(updateFilter, updateDoc, { session });
+        if (updateResult.modifiedCount === 0) {
           throw createOrderError(400, 'OUT_OF_STOCK', "THAT'S ALL WE HAVE FOR NOW", {
             index,
             productId: item.productId,
-            size: sizeKey,
+            size: canonicalSizeKey,
+            requested: item.qty,
+          });
+        }
+
+        const product = await Product.findById(item.productId).session(session);
+        if (!product) {
+          throw createOrderError(409, 'STOCK_UPDATE_CONFLICT', 'Unable to confirm stock update for this item', {
+            index,
+            productId: item.productId,
+            size: canonicalSizeKey,
             requested: item.qty,
           });
         }
@@ -642,8 +710,8 @@ router.post('/api/orders/create', requireAuthWithMessage('Authentication require
           productId: product._id,
           name: item.name || product.name,
           sku: item.sku || product.SKU || product.sku,
-          size: sizeKey,
-          sizeLabel: item.sizeLabel || sizeKey,
+          size: canonicalSizeKey,
+          sizeLabel: item.sizeLabel || canonicalSizeKey,
           qty: item.qty,
           price: item.price,
         });
