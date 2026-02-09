@@ -12,6 +12,8 @@ const { requireAuth, optionalAuth, requireAuthWithMessage } = require('./userAut
 const { createUpsShipment, cancelUpsShipment } = require('../utils/upsShipment');
 const { normalizeSizeInput } = require('../utils/sizeStocks');
 
+const stripe = process.env.STRIPE_SECRET_KEY ? require('stripe')(process.env.STRIPE_SECRET_KEY) : null;
+
 const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
 const VALID_PAYMENT_METHODS = new Map([
   ['debit card', 'Debit Card'],
@@ -300,6 +302,38 @@ function createOrderError(statusCode, code, message, details = {}) {
   error.clientMessage = message;
   error.details = details;
   return error;
+}
+
+async function attemptRefundForPaymentReference(paymentReference) {
+  if (!stripe) {
+    return { attempted: false, refunded: false, reason: 'stripe_not_configured' };
+  }
+
+  const ref = String(paymentReference || '').trim();
+  if (!ref.startsWith('pi_')) {
+    return { attempted: false, refunded: false, reason: 'not_payment_intent' };
+  }
+
+  try {
+    const paymentIntent = await stripe.paymentIntents.retrieve(ref);
+    const status = paymentIntent?.status;
+
+    if (status !== 'succeeded') {
+      return { attempted: true, refunded: false, reason: `payment_intent_status_${status || 'unknown'}` };
+    }
+
+    const refundParams = paymentIntent.latest_charge
+      ? { charge: paymentIntent.latest_charge }
+      : { payment_intent: ref };
+
+    const refund = await stripe.refunds.create(refundParams, {
+      idempotencyKey: `refund_${ref}`,
+    });
+
+    return { attempted: true, refunded: true, refundId: refund?.id || null };
+  } catch (e) {
+    return { attempted: true, refunded: false, reason: e?.message || 'refund_failed' };
+  }
 }
 
 function stripUndefinedFields(obj = {}) {
@@ -890,7 +924,15 @@ router.post('/api/orders/create', requireAuthWithMessage('Authentication require
     const statusCode = err && Number.isInteger(err.statusCode) ? err.statusCode : 500;
     const clientCode = err?.clientCode || (statusCode >= 500 ? 'INTERNAL_ERROR' : 'ORDER_ERROR');
     const message = err?.clientMessage || err?.message || 'An unexpected error occurred while creating the order.';
-    const payload = { error: clientCode, message };
+
+    const paymentReference = req.body?.paymentReference || req.body?.payment_reference || req.body?.paymentId || req.body?.payment_id || req.body?.orderId || req.body?.orderID;
+    const refund = paymentReference ? await attemptRefundForPaymentReference(paymentReference) : { attempted: false, refunded: false };
+
+    const payload = {
+      error: clientCode,
+      message,
+      ...(refund.attempted ? { refundAttempted: true, refunded: !!refund.refunded, refundId: refund.refundId || null, refundReason: refund.reason || null } : {}),
+    };
     if (err?.details) {
       payload.details = err.details;
     }
