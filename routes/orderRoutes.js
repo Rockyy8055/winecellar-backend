@@ -10,7 +10,7 @@ const { clearCartForUserId } = require('../controllers/cartController');
 const { updateOrderFromUPSTracking } = require('../services/upsTracking');
 const { requireAuth, optionalAuth, requireAuthWithMessage } = require('./userAuth');
 const { createUpsShipment, cancelUpsShipment } = require('../utils/upsShipment');
-const { normalizeSizeInput } = require('../utils/sizeStocks');
+const { normalizeSizeInput, computeTotalStock } = require('../utils/sizeStocks');
 
 const stripe = process.env.STRIPE_SECRET_KEY ? require('stripe')(process.env.STRIPE_SECRET_KEY) : null;
 
@@ -391,10 +391,14 @@ async function restoreStockForOrder(orderDoc, session) {
 
     const product = await Product.findById(productId).session(session);
     if (product) {
-      const newTotal = Number(product.totalStock || 0);
-      const desiredInStock = newTotal > 0;
-      if (product.inStock !== desiredInStock) {
-        await Product.updateOne({ _id: product._id }, { $set: { inStock: desiredInStock } }, { session });
+      const computedTotal = computeTotalStock(product.sizes);
+      const desiredInStock = computedTotal > 0;
+      if (Number(product.totalStock || 0) !== computedTotal || product.inStock !== desiredInStock) {
+        await Product.updateOne(
+          { _id: product._id },
+          { $set: { totalStock: computedTotal, inStock: desiredInStock } },
+          { session }
+        );
       }
     }
 
@@ -687,8 +691,9 @@ router.post('/api/orders/create', requireAuthWithMessage('Authentication require
         const currentQty = Number(
           (productBefore.sizes?.toObject?.() || productBefore.sizes || {})[resolvedSizeKey] ?? 0
         );
-        const currentTotal = Number(productBefore.totalStock ?? 0);
-        if (!Number.isFinite(currentQty) || currentQty < item.qty || !Number.isFinite(currentTotal) || currentTotal < item.qty) {
+
+        const computedTotalBefore = computeTotalStock(productBefore.sizes);
+        if (!Number.isFinite(currentQty) || currentQty < item.qty || computedTotalBefore < item.qty) {
           throw createOrderError(400, 'OUT_OF_STOCK', "THAT'S ALL WE HAVE FOR NOW", {
             index,
             productId: item.productId,
@@ -700,7 +705,6 @@ router.post('/api/orders/create', requireAuthWithMessage('Authentication require
         const updateFilter = {
           _id: item.productId,
           [`sizes.${resolvedSizeKey}`]: { $gte: item.qty },
-          totalStock: { $gte: item.qty },
         };
 
         const updateDoc = {
@@ -733,10 +737,15 @@ router.post('/api/orders/create', requireAuthWithMessage('Authentication require
           });
         }
 
-        const newTotal = Number(product.totalStock || 0);
-        const desiredInStock = newTotal > 0;
-        if (product.inStock !== desiredInStock) {
-          await Product.updateOne({ _id: product._id }, { $set: { inStock: desiredInStock } }, { session });
+        const computedTotalAfter = computeTotalStock(product.sizes);
+        const desiredInStock = computedTotalAfter > 0;
+        if (Number(product.totalStock || 0) !== computedTotalAfter || product.inStock !== desiredInStock) {
+          await Product.updateOne(
+            { _id: product._id },
+            { $set: { totalStock: computedTotalAfter, inStock: desiredInStock } },
+            { session }
+          );
+          product.totalStock = computedTotalAfter;
           product.inStock = desiredInStock;
         }
 
