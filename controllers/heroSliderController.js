@@ -1,144 +1,188 @@
-const { v4: uuidv4 } = require('uuid');
-const validator = require('validator');
-const HeroSlides = require('../models/heroSlides');
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
+const HeroSlide = require('../models/heroSlides');
+const { toPublicUrl } = require('../utils/publicUrl');
 
-const MAX_SLIDES = 6;
+const UPLOAD_RELATIVE_DIR = '/uploads/hero-slides';
+const UPLOAD_DIR = path.join(__dirname, '../uploads/hero-slides');
 
-function isValidHttpUrl(value) {
-  if (!value || typeof value !== 'string') return false;
-  const trimmed = value.trim();
-  if (!trimmed) return false;
-  // Allow protocol-relative (//cdn...) and absolute http(s)
-  if (trimmed.startsWith('//')) {
-    return validator.isURL(`https:${trimmed}`, { require_protocol: true, protocols: ['http', 'https'] });
+function ensureUploadDir() {
+  if (!fs.existsSync(UPLOAD_DIR)) {
+    fs.mkdirSync(UPLOAD_DIR, { recursive: true });
   }
-  return validator.isURL(trimmed, { require_protocol: true, protocols: ['http', 'https'] });
 }
 
-function normalizeSlidesInput(rawSlides) {
-  if (!Array.isArray(rawSlides)) {
-    throw new Error('"slides" must be an array');
+function getExtensionFromMime(mimeType = '') {
+  const lower = String(mimeType).toLowerCase();
+  if (lower === 'image/jpeg' || lower === 'image/jpg') return '.jpg';
+  if (lower === 'image/png') return '.png';
+  if (lower === 'image/webp') return '.webp';
+  if (lower === 'image/gif') return '.gif';
+  if (lower === 'image/svg+xml') return '.svg';
+  if (lower === 'image/bmp') return '.bmp';
+  if (lower === 'image/tiff') return '.tiff';
+  if (lower === 'image/x-icon' || lower === 'image/vnd.microsoft.icon') return '.ico';
+  if (lower.startsWith('image/')) {
+    const subtype = lower.split('/')[1] || 'jpg';
+    return '.' + subtype.replace(/[^a-z0-9]/g, '');
   }
-  if (rawSlides.length === 0) {
-    throw new Error('Provide at least one slide');
-  }
-  if (rawSlides.length > MAX_SLIDES) {
-    throw new Error(`You can only configure up to ${MAX_SLIDES} slides`);
-  }
-
-  const seenIds = new Set();
-  const normalized = rawSlides.map((slide, index) => {
-    if (!slide || typeof slide !== 'object') {
-      throw new Error(`Slide at index ${index} is invalid`);
-    }
-
-    const id = String(slide.id || '').trim() || uuidv4();
-    if (seenIds.has(id)) {
-      throw new Error(`Duplicate slide id detected: ${id}`);
-    }
-    seenIds.add(id);
-
-    const imageUrl = String(slide.imageUrl || slide.image || '').trim();
-    if (!isValidHttpUrl(imageUrl)) {
-      throw new Error(`Slide ${id} is missing a valid imageUrl (http/https)`);
-    }
-
-    const urlRaw = String(slide.url || '').trim();
-    const url = urlRaw ? urlRaw : '';
-    if (url && !isValidHttpUrl(url)) {
-      throw new Error(`Slide ${id} has an invalid link URL`);
-    }
-
-    const title = typeof slide.title === 'string' ? slide.title.trim() : '';
-    const subtitle = typeof slide.subtitle === 'string' ? slide.subtitle.trim() : '';
-
-    return {
-      id,
-      title,
-      subtitle,
-      imageUrl,
-      url,
-      order: index,
-    };
-  });
-
-  return normalized;
+  return '.jpg';
 }
 
-function buildPublicPayload(slides) {
+function extractFilenameFromUrl(imageUrl = '') {
+  if (!imageUrl) return '';
+  try {
+    const parsed = new URL(imageUrl);
+    return path.basename(parsed.pathname || '');
+  } catch (_) {
+    return path.basename(String(imageUrl));
+  }
+}
+
+function parseBoolean(value, defaultValue) {
+  if (value === undefined || value === null || value === '') return defaultValue;
+  if (typeof value === 'boolean') return value;
+  const asString = String(value).trim().toLowerCase();
+  if (asString === 'true') return true;
+  if (asString === 'false') return false;
+  return defaultValue;
+}
+
+function parseIntOrDefault(value, defaultValue) {
+  if (value === undefined || value === null || value === '') return defaultValue;
+  const parsed = Number.parseInt(String(value), 10);
+  return Number.isFinite(parsed) ? parsed : defaultValue;
+}
+
+function toSlideResponse(slideDoc) {
+  if (!slideDoc) return null;
+  const slide = typeof slideDoc.toObject === 'function' ? slideDoc.toObject() : slideDoc;
   return {
-    slides: slides.map((slide) => ({
-      id: slide.id,
-      title: slide.title,
-      subtitle: slide.subtitle,
-      image: slide.imageUrl,
-      imageUrl: slide.imageUrl,
-      url: slide.url,
-      order: slide.order,
-    })),
+    id: slide._id,
+    title: slide.title || '',
+    subtitle: slide.subtitle || '',
+    url: slide.url || '',
+    imageUrl: slide.imageUrl,
+    sortOrder: slide.sortOrder ?? 0,
+    isActive: slide.isActive ?? true,
+    createdAt: slide.createdAt,
+    updatedAt: slide.updatedAt,
   };
-}
-
-function invalidateSliderCache() {}
-
-async function getAdminHeroSlides(_req, res) {
-  try {
-    const doc = await HeroSlides.findOne({}).lean();
-    return res.json({
-      slides: doc?.slides || [],
-      updatedAt: doc?.updatedAt || null,
-      updatedBy: doc?.updatedBy || null,
-      maxSlides: MAX_SLIDES,
-    });
-  } catch (error) {
-    console.error('Admin slider fetch failed:', error);
-    return res.status(500).json({ message: 'Failed to load hero slides' });
-  }
-}
-
-async function saveAdminHeroSlides(req, res) {
-  try {
-    const normalizedSlides = normalizeSlidesInput(req.body?.slides);
-    const updatedBy = req?.admin?.email || req?.admin?.sub || 'admin';
-
-    const doc = await HeroSlides.findOneAndUpdate(
-      {},
-      { slides: normalizedSlides, updatedBy },
-      { new: true, upsert: true, setDefaultsOnInsert: true }
-    );
-
-    invalidateSliderCache();
-
-    return res.json({
-      slides: doc.slides,
-      updatedAt: doc.updatedAt,
-      updatedBy: doc.updatedBy,
-    });
-  } catch (error) {
-    console.error('Admin slider save failed:', error);
-    const status = error.message && error.message.startsWith('Slide') ? 400 : 400;
-    return res.status(status).json({ message: error.message || 'Failed to save hero slides' });
-  }
 }
 
 async function getPublicHeroSlides(_req, res) {
   try {
-    const doc = await HeroSlides.findOne({}).lean();
-    const slides = doc?.slides || [];
-    const payload = buildPublicPayload(slides);
+    const slides = await HeroSlide.find({ isActive: true })
+      .sort({ sortOrder: 1, createdAt: 1 })
+      .lean();
 
-    return res.json(payload);
+    return res.json({ slides: slides.map(toSlideResponse) });
   } catch (error) {
     console.error('Public slider fetch failed:', error);
     return res.status(500).json({ message: 'Failed to load hero slides' });
   }
 }
 
+async function adminListHeroSlides(_req, res) {
+  try {
+    const slides = await HeroSlide.find({}).sort({ sortOrder: 1, createdAt: 1 }).lean();
+    return res.json({ slides: slides.map(toSlideResponse) });
+  } catch (error) {
+    console.error('Admin slider list failed:', error);
+    return res.status(500).json({ message: 'Failed to load hero slides' });
+  }
+}
+
+async function adminCreateHeroSlide(req, res) {
+  try {
+    const file = req.file;
+    if (!file || !file.buffer) {
+      return res.status(400).json({ message: 'Image file is required (field name: image)' });
+    }
+
+    ensureUploadDir();
+
+    const ext = getExtensionFromMime(file.mimetype);
+    const stamp = Date.now();
+    const rand = crypto.randomBytes(6).toString('hex');
+    const filename = `hero-slide-${stamp}-${rand}${ext}`;
+    const filePath = path.join(UPLOAD_DIR, filename);
+    fs.writeFileSync(filePath, file.buffer);
+
+    const relativePath = `${UPLOAD_RELATIVE_DIR}/${filename}`;
+    const imageUrl = toPublicUrl(relativePath);
+
+    const slide = await HeroSlide.create({
+      imageUrl,
+      title: typeof req.body?.title === 'string' ? req.body.title : '',
+      subtitle: typeof req.body?.subtitle === 'string' ? req.body.subtitle : '',
+      url: typeof req.body?.url === 'string' ? req.body.url : '',
+      sortOrder: parseIntOrDefault(req.body?.sortOrder, 0),
+      isActive: parseBoolean(req.body?.isActive, true),
+    });
+
+    return res.status(201).json({ ok: true, slide: toSlideResponse(slide) });
+  } catch (error) {
+    console.error('Admin slider create failed:', error);
+    return res.status(500).json({ message: 'Failed to create hero slide' });
+  }
+}
+
+async function adminUpdateHeroSlide(req, res) {
+  try {
+    const { id } = req.params;
+    const update = {};
+    const body = req.body || {};
+
+    if (body.title !== undefined) update.title = body.title;
+    if (body.subtitle !== undefined) update.subtitle = body.subtitle;
+    if (body.url !== undefined) update.url = body.url;
+    if (body.sortOrder !== undefined) update.sortOrder = parseIntOrDefault(body.sortOrder, 0);
+    if (body.isActive !== undefined) update.isActive = parseBoolean(body.isActive, true);
+
+    const slide = await HeroSlide.findByIdAndUpdate(id, update, { new: true });
+    if (!slide) {
+      return res.status(404).json({ message: 'Slide not found' });
+    }
+    return res.json({ ok: true, slide: toSlideResponse(slide) });
+  } catch (error) {
+    console.error('Admin slider update failed:', error);
+    return res.status(500).json({ message: 'Failed to update hero slide' });
+  }
+}
+
+async function adminDeleteHeroSlide(req, res) {
+  try {
+    const { id } = req.params;
+    const slide = await HeroSlide.findByIdAndDelete(id);
+    if (!slide) {
+      return res.status(404).json({ message: 'Slide not found' });
+    }
+
+    try {
+      const filename = extractFilenameFromUrl(slide.imageUrl);
+      if (filename) {
+        const filePath = path.join(UPLOAD_DIR, filename);
+        if (fs.existsSync(filePath)) {
+          fs.unlinkSync(filePath);
+        }
+      }
+    } catch (e) {
+      console.warn('Failed to delete hero slide image:', e.message);
+    }
+
+    return res.json({ ok: true });
+  } catch (error) {
+    console.error('Admin slider delete failed:', error);
+    return res.status(500).json({ message: 'Failed to delete hero slide' });
+  }
+}
+
 module.exports = {
-  MAX_SLIDES,
-  normalizeSlidesInput,
-  getAdminHeroSlides,
-  saveAdminHeroSlides,
   getPublicHeroSlides,
-  invalidateSliderCache,
+  adminListHeroSlides,
+  adminCreateHeroSlide,
+  adminUpdateHeroSlide,
+  adminDeleteHeroSlide,
 };

@@ -2,35 +2,18 @@ const mongoose = require('mongoose');
 
 const { Schema } = mongoose;
 
-const MAX_SLIDES = 6;
-
-const SlideSchema = new Schema(
+const HeroSlideSchema = new Schema(
   {
-    id: { type: String, required: true },
+    imageUrl: { type: String, required: true },
     title: { type: String, default: '' },
     subtitle: { type: String, default: '' },
-    imageUrl: { type: String, required: true },
     url: { type: String, default: '' },
-    order: { type: Number, required: true },
+    sortOrder: { type: Number, default: 0 },
+    isActive: { type: Boolean, default: true },
   },
-  { _id: false }
+  { timestamps: true, collection: 'hero_slides' }
 );
 
-const HeroSlidesSchema = new Schema(
-  {
-    slides: {
-      type: [SlideSchema],
-      default: [],
-      validate: {
-        validator(value) {
-          return !value || value.length <= MAX_SLIDES;
-        },
-        message: `You can only configure up to ${MAX_SLIDES} hero slides`,
-      },
-    },
-    updatedBy: { type: String },
-  },
-  { timestamps: true }
-);
+HeroSlideSchema.index({ isActive: 1, sortOrder: 1, createdAt: 1 });
 
-module.exports = mongoose.models.HeroSlides || mongoose.model('HeroSlides', HeroSlidesSchema);
+module.exports = mongoose.models.HeroSlide || mongoose.model('HeroSlide', HeroSlideSchema);

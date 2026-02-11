@@ -20,7 +20,9 @@ const upload = multer({
 });
 
 const adminProductImageUpload = upload.single('image');
+const adminHeroSlideImageUpload = upload.single('image');
 
 module.exports = {
   adminProductImageUpload,
+  adminHeroSlideImageUpload,
 };

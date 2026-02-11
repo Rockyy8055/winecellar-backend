@@ -1,9 +1,12 @@
 const express = require('express');
 const router = express.Router();
 const { requireAdmin } = require('../config/requireAdmin');
+const { adminHeroSlideImageUpload } = require('../middleware/upload');
 const {
-  getAdminHeroSlides,
-  saveAdminHeroSlides,
+  adminListHeroSlides,
+  adminCreateHeroSlide,
+  adminUpdateHeroSlide,
+  adminDeleteHeroSlide,
   getPublicHeroSlides,
 } = require('../controllers/heroSliderController');
 
@@ -63,8 +66,10 @@ const {
  *       401:
  *         description: Unauthorized
  */
-router.get('/api/admin/slider', requireAdmin, getAdminHeroSlides);
-router.post('/api/admin/slider', requireAdmin, saveAdminHeroSlides);
+router.get('/api/admin/slider/slides', requireAdmin, adminListHeroSlides);
+router.post('/api/admin/slider/slides', requireAdmin, adminHeroSlideImageUpload, adminCreateHeroSlide);
+router.patch('/api/admin/slider/slides/:id', requireAdmin, adminUpdateHeroSlide);
+router.delete('/api/admin/slider/slides/:id', requireAdmin, adminDeleteHeroSlide);
 
 /**
  * @swagger
