@@ -1,15 +1,26 @@
 const express = require('express');
 const router = express.Router();
 const mongoose = require('mongoose');
-const { getOrder, updateOrderStatus, trackOrder, initializeOrderMetadata, emailOwnerOrderPlaced } = require('../controllers/orderController');
+const {
+  getOrder,
+  updateOrderStatus,
+  trackOrder,
+  initializeOrderMetadata,
+  emailOwnerOrderPlaced,
+  buildUPSShipmentPayloadFromOrder,
+  applyShipmentResultToOrder,
+} = require('../controllers/orderController');
 const { requireAdmin } = require('../config/requireAdmin');
 const { sendMail, getEmailProvider } = require('../services/emailService');
 const OrderDetails = require('../models/orderDetails');
 const Product = require('../models/product');
 const { clearCartForUserId } = require('../controllers/cartController');
 const { updateOrderFromUPSTracking } = require('../services/upsTracking');
+const { createUPSShipment } = require('../services/upsShipment');
+const { scheduleUPSPickupForOrder } = require('../services/upsPickup');
+const { subscribeUPSTrackAlert } = require('../services/upsTrackAlert');
 const { requireAuth, optionalAuth, requireAuthWithMessage } = require('./userAuth');
-const { createUpsShipment, cancelUpsShipment } = require('../utils/upsShipment');
+const { cancelUpsShipment } = require('../utils/upsShipment');
 const { normalizeSizeInput, computeTotalStock } = require('../utils/sizeStocks');
 
 const stripe = process.env.STRIPE_SECRET_KEY ? require('stripe')(process.env.STRIPE_SECRET_KEY) : null;
@@ -595,6 +606,101 @@ async function syncOrderWithUPSIfNeeded(order) {
   }
 }
 
+function serializeAutomationError(error) {
+  return {
+    message: error?.message || String(error),
+    statusCode: error?.statusCode || error?.response?.status || null,
+    details: error?.details || error?.response?.data || null,
+  };
+}
+
+async function requestUPSPickupAndStore(order, shipmentResult) {
+  try {
+    const pickupResult = await scheduleUPSPickupForOrder(order, shipmentResult);
+    order.upsPickupMode = pickupResult.mode || null;
+    order.upsPickupRequestedAt = new Date();
+    order.upsPickupResponse = pickupResult.raw || pickupResult;
+    order.upsPickupError = null;
+
+    if (pickupResult.skipped) {
+      order.upsPickupStatus = 'SKIPPED';
+      order.upsPickupTriggerStatus = pickupResult.reason || null;
+    } else {
+      order.upsPickupStatus = 'REQUESTED';
+      order.upsPickupPRN = pickupResult.prn || null;
+      order.upsPickupServiceDate = pickupResult.serviceDate || null;
+      order.upsPickupTriggerStatus = pickupResult.triggerStatus || null;
+      order.upsPickupRateStatus = pickupResult.rateStatus || null;
+    }
+    await order.save();
+    return pickupResult;
+  } catch (error) {
+    order.upsPickupStatus = 'FAILED';
+    order.upsPickupRequestedAt = new Date();
+    order.upsPickupError = serializeAutomationError(error);
+    await order.save();
+    throw error;
+  }
+}
+
+async function subscribeUPSTrackAlertAndStore(order) {
+  const trackingNumber = order.carrierTrackingNumber || order.upsTrackingNumber;
+  try {
+    const result = await subscribeUPSTrackAlert(trackingNumber);
+    order.upsTrackAlertSubscribedAt = new Date();
+    order.upsTrackAlertResponse = result.raw || result;
+    order.upsTrackAlertError = null;
+    order.upsTrackAlertStatus = result.skipped ? 'SKIPPED' : 'SUBSCRIBED';
+    await order.save();
+    return result;
+  } catch (error) {
+    order.upsTrackAlertStatus = 'FAILED';
+    order.upsTrackAlertSubscribedAt = new Date();
+    order.upsTrackAlertError = serializeAutomationError(error);
+    await order.save();
+    throw error;
+  }
+}
+
+async function completeUPSAutomationForOrder(order) {
+  const shipmentPayload = buildUPSShipmentPayloadFromOrder(order);
+  const shipmentResult = await createUPSShipment(shipmentPayload);
+  if (!shipmentResult.trackingNumber && !shipmentResult.shipmentIdentificationNumber) {
+    const err = new Error('UPS response missing TrackingNumber');
+    err.statusCode = 502;
+    err.details = shipmentResult.raw || shipmentResult;
+    throw err;
+  }
+  applyShipmentResultToOrder(order, shipmentResult, 'UPS shipment created');
+  await order.save();
+
+  let pickupResult = null;
+  try {
+    pickupResult = await requestUPSPickupAndStore(order, shipmentResult);
+  } catch (pickupError) {
+    console.error('UPS pickup request failed:', {
+      orderId: String(order._id),
+      trackingCode: order.trackingCode,
+      message: pickupError?.message || String(pickupError),
+      details: pickupError?.details || pickupError?.response?.data || null,
+    });
+  }
+
+  let trackAlertResult = null;
+  try {
+    trackAlertResult = await subscribeUPSTrackAlertAndStore(order);
+  } catch (trackAlertError) {
+    console.error('UPS Track Alert subscription failed:', {
+      orderId: String(order._id),
+      trackingCode: order.trackingCode,
+      message: trackAlertError?.message || String(trackAlertError),
+      details: trackAlertError?.details || trackAlertError?.response?.data || null,
+    });
+  }
+
+  return { shipmentResult, pickupResult, trackAlertResult };
+}
+
 router.post('/api/orders/create', requireAuthWithMessage('Authentication required to place orders'), async (req, res) => {
   try {
     const userId = req.user?._id;
@@ -861,41 +967,24 @@ router.post('/api/orders/create', requireAuthWithMessage('Authentication require
 
     if (shouldAttemptUpsShipment) {
       try {
-        const upsResponse = await createUpsShipment(orderDoc);
-      const trackingNumber =
-        upsResponse?.ShipmentResponse
-          ?.ShipmentResults
-          ?.PackageResults
-          ?.TrackingNumber;
+        const automation = await completeUPSAutomationForOrder(orderDoc);
 
-      const shipmentIdentificationNumber =
-        upsResponse?.ShipmentResponse
-          ?.ShipmentResults
-          ?.ShipmentIdentificationNumber;
-
-      if (!trackingNumber) {
-        const err = new Error('UPS response missing TrackingNumber');
-        err.statusCode = 502;
-        throw err;
-      }
-
-      orderDoc.upsTrackingNumber = String(trackingNumber);
-      if (shipmentIdentificationNumber) {
-        orderDoc.upsShipmentIdentificationNumber = String(shipmentIdentificationNumber);
-      }
-      orderDoc.upsStatus = 'CREATED';
-      orderDoc.carrier = 'UPS';
-      orderDoc.carrierTrackingNumber = String(trackingNumber);
-      await orderDoc.save();
-
-      console.log('UPS shipment created', {
-        orderId: String(orderDoc._id),
-        trackingCode: orderDoc.trackingCode,
-        carrier: orderDoc.carrier,
-        carrierTrackingNumber: orderDoc.carrierTrackingNumber,
-        upsTrackingNumber: orderDoc.upsTrackingNumber,
-        upsStatus: orderDoc.upsStatus,
-      });
+        console.log('UPS shipment automation completed', {
+          orderId: String(orderDoc._id),
+          trackingCode: orderDoc.trackingCode,
+          carrier: orderDoc.carrier,
+          carrierTrackingNumber: orderDoc.carrierTrackingNumber,
+          upsTrackingNumber: orderDoc.upsTrackingNumber,
+          upsShipmentIdentificationNumber: orderDoc.upsShipmentIdentificationNumber,
+          upsStatus: orderDoc.upsStatus,
+          labelStored: !!orderDoc.carrierLabelData,
+          labelFormat: orderDoc.carrierLabelFormat || null,
+          pickupStatus: orderDoc.upsPickupStatus || null,
+          pickupReference: orderDoc.upsPickupPRN || orderDoc.upsPickupTriggerStatus || null,
+          trackAlertStatus: orderDoc.upsTrackAlertStatus || null,
+          pickupSkipped: !!automation.pickupResult?.skipped,
+          trackAlertSkipped: !!automation.trackAlertResult?.skipped,
+        });
       } catch (shipmentError) {
         console.error('UPS shipment creation skipped/failed:', {
           message: shipmentError && shipmentError.message ? shipmentError.message : String(shipmentError),
@@ -910,6 +999,7 @@ router.post('/api/orders/create', requireAuthWithMessage('Authentication require
 
         try {
           orderDoc.upsStatus = 'FAILED';
+          orderDoc.upsShipmentResponse = shipmentError?.details || shipmentError?.response?.data || { message: shipmentError?.message || String(shipmentError) };
           await orderDoc.save();
         } catch (_) {}
       }
@@ -1194,6 +1284,48 @@ router.get('/api/admin/orders/:id', requireAdmin, async (req, res) => {
   }
 });
 
+function getUPSLabelContentType(format) {
+  const normalized = String(format || '').trim().toUpperCase();
+  if (normalized.includes('PDF')) return 'application/pdf';
+  if (normalized.includes('PNG')) return 'image/png';
+  if (normalized.includes('GIF')) return 'image/gif';
+  if (normalized.includes('ZPL')) return 'text/plain';
+  return 'application/octet-stream';
+}
+
+function getUPSLabelExtension(format) {
+  const contentType = getUPSLabelContentType(format);
+  if (contentType === 'application/pdf') return 'pdf';
+  if (contentType === 'image/png') return 'png';
+  if (contentType === 'image/gif') return 'gif';
+  if (contentType === 'text/plain') return 'zpl';
+  return 'label';
+}
+
+// Admin: retrieve stored UPS shipping label
+router.get('/api/admin/orders/:id/ups-label', requireAdmin, async (req, res) => {
+  try {
+    const order = await OrderDetails.findById(req.params.id).lean();
+    if (!order) return res.status(404).json({ error: 'Not found' });
+    if (!order.carrierLabelData) {
+      return res.status(404).json({ error: 'UPS label is not stored for this order', labelUrl: order.carrierLabelUrl || null });
+    }
+
+    const format = order.carrierLabelFormat || 'label';
+    const extension = getUPSLabelExtension(format);
+    const contentType = getUPSLabelContentType(format);
+    const trackingNumber = order.carrierTrackingNumber || order.upsTrackingNumber || order.trackingCode || order._id;
+    const filename = `ups-label-${trackingNumber}.${extension}`;
+    const labelBuffer = Buffer.from(order.carrierLabelData, 'base64');
+
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
+    return res.send(labelBuffer);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // Admin: manually create UPS shipment for an order
 router.post('/api/admin/orders/:id/create-shipment', requireAdmin, async (req, res) => {
   try {
@@ -1204,36 +1336,17 @@ router.post('/api/admin/orders/:id/create-shipment', requireAdmin, async (req, r
       return res.status(409).json({ error: 'Pick & Pay orders cannot be shipped with UPS' });
     }
 
-    const upsResponse = await createUpsShipment(order);
-    const trackingNumber =
-      upsResponse?.ShipmentResponse
-        ?.ShipmentResults
-        ?.PackageResults
-        ?.TrackingNumber;
-
-    const shipmentIdentificationNumber =
-      upsResponse?.ShipmentResponse
-        ?.ShipmentResults
-        ?.ShipmentIdentificationNumber;
-
-    if (!trackingNumber) {
-      return res.status(502).json({ error: 'UPS response missing TrackingNumber' });
-    }
-
-    order.upsTrackingNumber = String(trackingNumber);
-    if (shipmentIdentificationNumber) {
-      order.upsShipmentIdentificationNumber = String(shipmentIdentificationNumber);
-    }
-    order.upsStatus = 'CREATED';
-    order.carrier = 'UPS';
-    order.carrierTrackingNumber = String(trackingNumber);
-    await order.save();
+    await completeUPSAutomationForOrder(order);
 
     res.json({
       message: 'UPS shipment created successfully',
       trackingNumber: order.carrierTrackingNumber,
       upsTrackingNumber: order.upsTrackingNumber,
       shipmentIdentificationNumber: order.upsShipmentIdentificationNumber || undefined,
+      labelStored: !!order.carrierLabelData,
+      pickupStatus: order.upsPickupStatus || undefined,
+      pickupReference: order.upsPickupPRN || order.upsPickupTriggerStatus || undefined,
+      trackAlertStatus: order.upsTrackAlertStatus || undefined,
       carrier: order.carrier,
       upsStatus: order.upsStatus,
       status: order.status,

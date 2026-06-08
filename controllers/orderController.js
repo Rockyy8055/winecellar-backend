@@ -68,7 +68,7 @@ function buildUPSShipmentPayloadFromOrder(order) {
 
   return {
     orderId: String(order._id),
-    paymentId: order.paymentReference || (order.payment_id ? String(order.payment_id) : undefined),
+    paymentId: order.paymentReference || (order.payment_id ? String(order.payment_id) : undefined) || order.trackingCode || String(order._id),
     customer: order.customer || {},
     shippingAddress,
     lineItems,
@@ -85,10 +85,16 @@ function buildUPSShipmentPayloadFromOrder(order) {
 function applyShipmentResultToOrder(order, shipmentResult, note) {
   order.carrier = 'UPS';
   order.carrierTrackingNumber = shipmentResult.trackingNumber || shipmentResult.shipmentIdentificationNumber;
+  order.upsTrackingNumber = shipmentResult.trackingNumber || shipmentResult.shipmentIdentificationNumber;
+  order.upsShipmentIdentificationNumber = shipmentResult.shipmentIdentificationNumber || null;
+  order.upsShipmentResponse = shipmentResult.raw || null;
   if (shipmentResult.label) {
     order.carrierLabelFormat = shipmentResult.label.format || null;
     order.carrierLabelData = shipmentResult.label.data || null;
+    order.carrierLabelUrl = shipmentResult.label.url || null;
+    order.carrierLabelStoredAt = new Date();
   }
+  order.upsStatus = 'CREATED';
   order.status = 'CONFIRMED';
   order.statusHistory = Array.isArray(order.statusHistory) ? order.statusHistory : [];
   order.statusHistory.push({ status: 'CONFIRMED', note, at: new Date() });
@@ -108,16 +114,35 @@ async function createShipmentForOrder(orderId) {
 
 const OWNER_EMAIL = process.env.ORDER_ALERT_EMAIL || process.env.WINECELLAR_OWNER_EMAIL || 'winecellarcustomerservice@gmail.com';
 
+function getUPSTrackingUrl(order) {
+  const trackingNumber = order?.carrierTrackingNumber || order?.upsTrackingNumber;
+  if (!trackingNumber) return null;
+  return `https://www.ups.com/track?tracknum=${encodeURIComponent(trackingNumber)}`;
+}
+
+function getLabelExtension(format) {
+  const normalized = String(format || '').trim().toLowerCase();
+  if (normalized.includes('pdf')) return 'pdf';
+  if (normalized.includes('png')) return 'png';
+  if (normalized.includes('gif')) return 'gif';
+  if (normalized.includes('zpl')) return 'zpl';
+  return 'label';
+}
+
+function buildOwnerLabelAttachment(order) {
+  if (!order?.carrierLabelData) return null;
+  const extension = getLabelExtension(order.carrierLabelFormat);
+  const trackingNumber = order.carrierTrackingNumber || order.upsTrackingNumber || order.trackingCode || 'order';
+  return {
+    filename: `ups-label-${trackingNumber}.${extension}`,
+    content: order.carrierLabelData,
+  };
+}
+
 async function emailOwnerOrderPlaced(order) {
   try {
     if (!OWNER_EMAIL) {
       console.warn('ORDER_ALERT_EMAIL not configured; skipping owner notification.');
-      return;
-    }
-    const customerEmail = order?.customer?.email;
-    if (customerEmail && customerEmail.toLowerCase() === OWNER_EMAIL.toLowerCase()) {
-      // Avoid emailing the customer with the internal alert if they used the owner email address.
-      console.warn('Skipping owner notification because customer email matches owner email.');
       return;
     }
     const to = OWNER_EMAIL;
@@ -131,9 +156,22 @@ async function emailOwnerOrderPlaced(order) {
       .join('\n');
     const address = order.shippingAddress || {};
     const customer = order.customer || {};
+    const trackingNumber = order.carrierTrackingNumber || order.upsTrackingNumber || '';
+    const trackingUrl = getUPSTrackingUrl(order);
+    const labelAttachment = buildOwnerLabelAttachment(order);
+    const labelStatus = order.carrierLabelData
+      ? `Attached (${order.carrierLabelFormat || 'label'})`
+      : (order.carrierLabelUrl || 'Not available');
     const text = `New order placed\n\n` +
       `Tracking: ${order.trackingCode}\n` +
       `Status: ${order.status}\n` +
+      `UPS Tracking Number: ${trackingNumber || 'Not available'}\n` +
+      `UPS Shipment ID: ${order.upsShipmentIdentificationNumber || 'Not available'}\n` +
+      `UPS Pickup Reference: ${order.upsPickupPRN || order.upsPickupTriggerStatus || order.upsPickupStatus || 'Not available'}\n` +
+      `UPS Pickup Mode: ${order.upsPickupMode || 'Not available'}\n` +
+      `UPS Track Alert: ${order.upsTrackAlertStatus || 'Not available'}\n` +
+      `Tracking Link: ${trackingUrl || 'Not available'}\n` +
+      `Shipping Label: ${labelStatus}\n` +
       `Total: £${Number(order.total).toFixed(2)}\n\n` +
       `Customer:\n` +
       `  ${customer.name || ''}\n` +
@@ -144,7 +182,30 @@ async function emailOwnerOrderPlaced(order) {
       `  ${address.city || ''} ${address.postcode || ''}\n` +
       `  ${address.country || ''}\n\n` +
       `Items:\n${itemsText}`;
-    await sendMail(to, subject, text);
+    const html = `
+      <div style="font-family:Arial,sans-serif;max-width:720px;margin:auto">
+        <h2>New Wine Cellar Order</h2>
+        <p><strong>Order:</strong> ${order.trackingCode}</p>
+        <p><strong>Status:</strong> ${order.status}</p>
+        <p><strong>Total:</strong> £${Number(order.total).toFixed(2)}</p>
+        <h3>UPS Shipment</h3>
+        <p><strong>Tracking number:</strong> ${trackingNumber || 'Not available'}</p>
+        <p><strong>Shipment ID:</strong> ${order.upsShipmentIdentificationNumber || 'Not available'}</p>
+        <p><strong>Pickup reference:</strong> ${order.upsPickupPRN || order.upsPickupTriggerStatus || order.upsPickupStatus || 'Not available'}</p>
+        <p><strong>Pickup mode:</strong> ${order.upsPickupMode || 'Not available'}</p>
+        <p><strong>Track Alert:</strong> ${order.upsTrackAlertStatus || 'Not available'}</p>
+        ${trackingUrl ? `<p><a href="${trackingUrl}">Track package in UPS</a></p>` : ''}
+        <p><strong>Shipping label:</strong> ${labelStatus}</p>
+        <h3>Customer</h3>
+        <p>${customer.name || ''}<br/>${customer.email || ''}<br/>${customer.phone || ''}</p>
+        <h3>Shipping Address</h3>
+        <p>${address.line1 || ''}<br/>${address.line2 || ''}<br/>${address.city || ''} ${address.postcode || ''}<br/>${address.country || ''}</p>
+        <h3>Items</h3>
+        <pre style="font-family:Arial,sans-serif;white-space:pre-wrap">${itemsText}</pre>
+      </div>`;
+    await sendMail(to, subject, text, html, {
+      attachments: labelAttachment ? [labelAttachment] : [],
+    });
   } catch (e) {
     console.error('Email notify failed:', e.message);
   }
@@ -159,4 +220,6 @@ module.exports = {
   emailOwnerOrderPlaced,
   buildUPSShipmentPayloadFromOrder,
   applyShipmentResultToOrder,
+  getUPSTrackingUrl,
+  buildOwnerLabelAttachment,
 };

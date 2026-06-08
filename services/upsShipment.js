@@ -7,6 +7,26 @@ const UPS_BASE_URLS = Object.freeze({
   production: 'https://onlinetools.ups.com',
 });
 
+function getDefaultShipper() {
+  const defaultStore = String(process.env.UPS_DEFAULT_STORE || process.env.DEFAULT_UPS_STORE || '').trim().toLowerCase();
+  if (defaultStore.includes('stoke')) {
+    return {
+      name: 'WineCellar Stoke Newington',
+      line1: '164 Stoke Newington Road',
+      city: 'London',
+      postalCode: 'N16 7UY',
+      country: 'GB',
+    };
+  }
+  return {
+    name: 'WineCellar Dalston',
+    line1: '536 Kingsland Road',
+    city: 'London',
+    postalCode: 'E8 4AH',
+    country: 'GB',
+  };
+}
+
 function resolveUPSBaseUrl(envSetting, overrideUrl) {
   if (overrideUrl) {
     return overrideUrl;
@@ -21,6 +41,7 @@ function resolveUPSBaseUrl(envSetting, overrideUrl) {
 function loadUPSConfig(overrides = {}) {
   const envSetting = overrides.UPS_ENV ?? process.env.UPS_ENV ?? 'sandbox';
   const baseUrlOverride = overrides.UPS_BASE_URL ?? process.env.UPS_BASE_URL;
+  const fallbackShipper = getDefaultShipper();
 
   const config = {
     env: envSetting,
@@ -30,15 +51,17 @@ function loadUPSConfig(overrides = {}) {
     accountNumber: overrides.UPS_ACCOUNT_NUMBER ?? process.env.UPS_ACCOUNT_NUMBER,
     serviceCode: overrides.UPS_SERVICE_CODE ?? process.env.UPS_SERVICE_CODE ?? '03',
     labelFormat: overrides.UPS_LABEL_FORMAT ?? process.env.UPS_LABEL_FORMAT ?? 'GIF',
+    shipApiVersion: overrides.UPS_SHIP_API_VERSION ?? process.env.UPS_SHIP_API_VERSION ?? 'v2409',
+    transactionSrc: overrides.UPS_TRANSACTION_SRC ?? process.env.UPS_TRANSACTION_SRC ?? 'WineCellarBackend',
     shipper: {
-      name: overrides.UPS_SHIPPER_NAME ?? process.env.UPS_SHIPPER_NAME ?? overrides.SHIPPER_NAME ?? process.env.SHIPPER_NAME,
+      name: overrides.UPS_SHIPPER_NAME ?? process.env.UPS_SHIPPER_NAME ?? overrides.SHIPPER_NAME ?? process.env.SHIPPER_NAME ?? fallbackShipper.name,
       phone: overrides.UPS_SHIPPER_PHONE ?? process.env.UPS_SHIPPER_PHONE ?? overrides.SHIPPER_PHONE ?? process.env.SHIPPER_PHONE,
       email: overrides.UPS_SHIPPER_EMAIL ?? process.env.UPS_SHIPPER_EMAIL,
-      line1: overrides.UPS_SHIPPER_LINE1 ?? process.env.UPS_SHIPPER_LINE1 ?? overrides.SHIPPER_ADDRESS_LINE1 ?? process.env.SHIPPER_ADDRESS_LINE1,
+      line1: overrides.UPS_SHIPPER_LINE1 ?? process.env.UPS_SHIPPER_LINE1 ?? overrides.SHIPPER_ADDRESS_LINE1 ?? process.env.SHIPPER_ADDRESS_LINE1 ?? fallbackShipper.line1,
       line2: overrides.UPS_SHIPPER_LINE2 ?? process.env.UPS_SHIPPER_LINE2 ?? overrides.SHIPPER_ADDRESS_LINE2 ?? process.env.SHIPPER_ADDRESS_LINE2,
-      city: overrides.UPS_SHIPPER_CITY ?? process.env.UPS_SHIPPER_CITY ?? overrides.SHIPPER_CITY ?? process.env.SHIPPER_CITY,
-      postalCode: overrides.UPS_SHIPPER_POSTAL_CODE ?? process.env.UPS_SHIPPER_POSTAL_CODE ?? overrides.UPS_SHIPPER_POSTCODE ?? process.env.UPS_SHIPPER_POSTCODE ?? overrides.SHIPPER_POSTCODE ?? process.env.SHIPPER_POSTCODE,
-      country: overrides.UPS_SHIPPER_COUNTRY ?? process.env.UPS_SHIPPER_COUNTRY ?? overrides.SHIPPER_COUNTRY ?? process.env.SHIPPER_COUNTRY ?? 'GB',
+      city: overrides.UPS_SHIPPER_CITY ?? process.env.UPS_SHIPPER_CITY ?? overrides.SHIPPER_CITY ?? process.env.SHIPPER_CITY ?? fallbackShipper.city,
+      postalCode: overrides.UPS_SHIPPER_POSTAL_CODE ?? process.env.UPS_SHIPPER_POSTAL_CODE ?? overrides.UPS_SHIPPER_POSTCODE ?? process.env.UPS_SHIPPER_POSTCODE ?? overrides.SHIPPER_POSTCODE ?? process.env.SHIPPER_POSTCODE ?? fallbackShipper.postalCode,
+      country: overrides.UPS_SHIPPER_COUNTRY ?? process.env.UPS_SHIPPER_COUNTRY ?? overrides.SHIPPER_COUNTRY ?? process.env.SHIPPER_COUNTRY ?? fallbackShipper.country,
     },
   };
 
@@ -294,46 +317,56 @@ async function createUPSShipment(orderPayload, envOverrides = {}) {
   const config = loadUPSConfig(envOverrides);
 
   try {
-    const accessToken = await getUPSAccessToken(config.baseUrl, config.clientId, config.clientSecret);
+    const accessToken = await getUPSAccessToken(config.baseUrl, config.clientId, config.clientSecret, config.accountNumber);
     const shipmentRequest = buildShipmentRequest(orderPayload, config);
-    const url = `${config.baseUrl}/api/shipments/v2403/shipments`;
+    const url = `${config.baseUrl}/api/shipments/${config.shipApiVersion}/ship`;
 
     const response = await axios.post(url, shipmentRequest, {
       headers: {
         Authorization: `Bearer ${accessToken}`,
         'Content-Type': 'application/json',
         transId: uuidv4(),
-        transactionSrc: 'WineCellarBackend',
+        transactionSrc: config.transactionSrc,
       },
     });
 
-    const shipmentResults = response.data?.ShipmentResponse?.ShipmentResults || {};
-    const packageResultsRaw = shipmentResults.PackageResults;
-    const packageResults = Array.isArray(packageResultsRaw)
-      ? packageResultsRaw
-      : packageResultsRaw
-        ? [packageResultsRaw]
-        : [];
-    const firstPackage = packageResults[0] || {};
-    const trackingNumber = firstPackage.TrackingNumber || shipmentResults.ShipmentIdentificationNumber;
-
-    const labelGraphic = firstPackage.ShippingLabel?.GraphicImage;
-    const labelFormat = firstPackage.ShippingLabel?.ImageFormat?.Code || config.labelFormat;
-
-    return {
-      trackingNumber,
-      shipmentIdentificationNumber: shipmentResults.ShipmentIdentificationNumber,
-      label: labelGraphic
-        ? {
-            format: labelFormat,
-            data: labelGraphic,
-          }
-        : null,
-      raw: response.data,
-    };
+    return parseUPSShipmentResponse(response.data, config);
   } catch (error) {
     throw extractUpsError(error);
   }
+}
+
+function normalizePackageResults(packageResultsRaw) {
+  if (Array.isArray(packageResultsRaw)) {
+    return packageResultsRaw;
+  }
+  return packageResultsRaw ? [packageResultsRaw] : [];
+}
+
+function parseUPSShipmentResponse(data, config = {}) {
+  const shipmentResults = data?.ShipmentResponse?.ShipmentResults || {};
+  const packageResults = normalizePackageResults(shipmentResults.PackageResults);
+  const firstPackage = packageResults[0] || {};
+  const trackingNumber = firstPackage.TrackingNumber || shipmentResults.ShipmentIdentificationNumber || null;
+
+  const shippingLabel = firstPackage.ShippingLabel || {};
+  const labelGraphic = shippingLabel.GraphicImage || shippingLabel.HTMLImage || shippingLabel.PDF417 || null;
+  const labelFormat = shippingLabel.ImageFormat?.Code || config.labelFormat || null;
+  const labelUrl = shippingLabel.LabelURL || shippingLabel.LabelImageURL || null;
+
+  return {
+    trackingNumber,
+    shipmentIdentificationNumber: shipmentResults.ShipmentIdentificationNumber || null,
+    label: labelGraphic
+      ? {
+          format: labelFormat,
+          data: labelGraphic,
+          url: labelUrl,
+        }
+      : (labelUrl ? { format: labelFormat, data: null, url: labelUrl } : null),
+    packageResults,
+    raw: data,
+  };
 }
 
 module.exports = {
@@ -341,4 +374,7 @@ module.exports = {
   loadUPSConfig,
   resolveUPSBaseUrl,
   computeTotalWeightKg,
+  buildShipmentRequest,
+  parseUPSShipmentResponse,
+  getDefaultShipper,
 };

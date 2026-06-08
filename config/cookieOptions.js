@@ -1,6 +1,6 @@
 const isProduction = process.env.NODE_ENV === 'production';
 
-const DEFAULT_COOKIE_DOMAIN = process.env.COOKIE_DOMAIN || (isProduction ? '.winecellar.co.in' : undefined);
+const DEFAULT_COOKIE_DOMAIN = process.env.COOKIE_DOMAIN || undefined;
 
 function buildCookieOptions(overrides = {}) {
   const baseOptions = {
@@ -22,4 +22,3 @@ module.exports = {
   DEFAULT_COOKIE_DOMAIN,
   isProduction,
 };
-

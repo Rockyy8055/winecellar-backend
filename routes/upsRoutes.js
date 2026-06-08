@@ -4,8 +4,11 @@ const { requireAdmin } = require('../config/requireAdmin');
 const { 
   getUPSTrackingInfo, 
   updateOrderFromUPSTracking, 
-  syncAllActiveOrdersWithUPS 
+  syncAllActiveOrdersWithUPS,
+  normalizeUPSWebhookPayload,
+  applyUPSTrackingEventToOrder,
 } = require('../services/upsTracking');
+const { verifyTrackAlertCredential } = require('../services/upsTrackAlert');
 const { createUPSShipment } = require('../services/upsShipment');
 const { applyShipmentResultToOrder } = require('../controllers/orderController');
 const OrderDetails = require('../models/orderDetails');
@@ -146,40 +149,33 @@ router.post('/api/admin/ups/sync-all', requireAdmin, async (req, res) => {
 router.post('/api/ups/webhook', async (req, res) => {
   try {
     console.log('UPS webhook received:', JSON.stringify(req.body, null, 2));
-    
-    // UPS webhook payload structure (example - adjust based on actual UPS webhook format)
-    const { trackingNumber, statusCode, statusDescription, timestamp } = req.body;
-    
-    if (!trackingNumber) {
+
+    if (!verifyTrackAlertCredential(req.headers)) {
+      return res.status(401).json({ error: 'Invalid UPS webhook credential' });
+    }
+
+    const event = normalizeUPSWebhookPayload(req.body);
+
+    if (!event.trackingNumber) {
       return res.status(400).json({ error: 'Missing tracking number' });
     }
     
     // Find order by UPS tracking number
-    const order = await OrderDetails.findOne({ carrierTrackingNumber: trackingNumber });
+    const order = await OrderDetails.findOne({
+      $or: [
+        { carrierTrackingNumber: event.trackingNumber },
+        { upsTrackingNumber: event.trackingNumber },
+      ],
+    });
     
     if (!order) {
-      console.warn(`Order not found for UPS tracking number: ${trackingNumber}`);
+      console.warn(`Order not found for UPS tracking number: ${event.trackingNumber}`);
       return res.status(404).json({ error: 'Order not found' });
     }
-    
-    // Map UPS status to our status
-    const { mapUPSStatusToOrderStatus } = require('../services/upsTracking');
-    const newStatus = mapUPSStatusToOrderStatus(statusCode);
-    
-    // Update order status if changed
-    if (order.status !== newStatus) {
-      order.status = newStatus;
-      order.statusHistory.push({
-        status: newStatus,
-        note: `UPS Webhook: ${statusDescription}`,
-        at: new Date(timestamp || Date.now()),
-      });
-      order.modified_at = new Date();
-      await order.save();
-      
-      console.log(`Order ${order.trackingCode} updated to ${newStatus} via UPS webhook`);
-    }
-    
+
+    const updatedOrder = await applyUPSTrackingEventToOrder(order, event, 'UPS Webhook');
+    console.log(`Order ${updatedOrder.trackingCode} processed via UPS webhook: ${updatedOrder.status}`);
+
     // Acknowledge receipt
     res.json({ success: true, message: 'Webhook processed' });
   } catch (error) {

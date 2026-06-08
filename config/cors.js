@@ -11,7 +11,7 @@ const FALLBACK_ALLOWED_ORIGINS = [
 ];
 
 const ALLOWED_METHODS = ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'];
-const ALLOWED_HEADERS = ['Content-Type', 'Authorization'];
+const ALLOWED_HEADERS = ['Content-Type', 'Authorization', 'X-Auth-Token', 'X-Access-Token'];
 const EXPOSED_HEADERS = ['Content-Length'];
 
 function buildAllowedOrigins() {

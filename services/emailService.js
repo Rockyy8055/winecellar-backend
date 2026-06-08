@@ -29,7 +29,7 @@ function getEmailProvider() {
   return 'resend';
 }
 
-async function sendMail(to, subject, text, html) {
+async function sendMail(to, subject, text, html, options = {}) {
   if (!resendClient) {
     throw new Error('Resend client is not configured. Set RESEND_API_KEY.');
   }
@@ -40,6 +40,7 @@ async function sendMail(to, subject, text, html) {
     subject,
     ...(text ? { text } : {}),
     ...(html ? { html } : {}),
+    ...(Array.isArray(options.attachments) && options.attachments.length ? { attachments: options.attachments } : {}),
   };
 
   try {

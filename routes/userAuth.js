@@ -2,6 +2,7 @@ const express = require('express');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const User = require('../models/user');
+const WebUser = require('../models/WebUser');
 const { requireAdmin } = require('../config/requireAdmin');
 const { buildCookieOptions } = require('../config/cookieOptions');
 
@@ -74,34 +75,100 @@ function sendAuthRequired(res, message = 'Authentication required') {
   return res.status(401).json({ success: false, message, code: 'AUTH_REQUIRED' });
 }
 
-async function resolveUserFromCookie(req, res) {
+function getAuthTokenFromRequest(req) {
+  const cookieToken = req.cookies && req.cookies[COOKIE_NAME];
+  if (cookieToken) {
+    return { token: cookieToken, source: 'cookie' };
+  }
+
+  const authHeader = req.headers.authorization || req.headers.Authorization;
+  if (authHeader && /^Bearer\s+/i.test(String(authHeader))) {
+    return { token: String(authHeader).replace(/^Bearer\s+/i, '').trim(), source: 'authorization' };
+  }
+
+  const headerToken = req.headers['x-auth-token'] || req.headers['x-access-token'];
+  if (headerToken) {
+    return { token: String(headerToken).trim(), source: 'header' };
+  }
+
+  return null;
+}
+
+async function findSessionUser(payload) {
+  if (!payload || typeof payload !== 'object') {
+    return null;
+  }
+
+  const explicitUserId = payload.userId || payload.sub;
+  const legacyId = payload.id || payload._id;
+
+  if (explicitUserId) {
+    const userDoc = await User.findById(explicitUserId).lean();
+    if (userDoc) {
+      return { doc: userDoc, authModel: 'User' };
+    }
+    const webUserDoc = await WebUser.findById(explicitUserId).lean();
+    if (webUserDoc) {
+      return { doc: webUserDoc, authModel: 'WebUser' };
+    }
+  }
+
+  if (legacyId) {
+    const preferWebUser = payload.userType === 'WebUser' || payload.username;
+    if (preferWebUser) {
+      const webUserDoc = await WebUser.findById(legacyId).lean();
+      if (webUserDoc) {
+        return { doc: webUserDoc, authModel: 'WebUser' };
+      }
+    }
+
+    const userDoc = await User.findById(legacyId).lean();
+    if (userDoc) {
+      return { doc: userDoc, authModel: 'User' };
+    }
+
+    const webUserDoc = await WebUser.findById(legacyId).lean();
+    if (webUserDoc) {
+      return { doc: webUserDoc, authModel: 'WebUser' };
+    }
+  }
+
+  return null;
+}
+
+async function resolveUserFromRequest(req, res) {
   if (req._authResolved) return;
   req._authResolved = true;
   req.userId = null;
   req.user = null;
+  req.authModel = null;
 
-  const token = req.cookies && req.cookies[COOKIE_NAME];
-  if (!token || !JWT_SECRET) {
+  const tokenInfo = getAuthTokenFromRequest(req);
+  if (!tokenInfo || !tokenInfo.token || !JWT_SECRET) {
     return;
   }
 
   try {
-    const payload = jwt.verify(token, JWT_SECRET);
-    if (!payload || !payload.userId) {
-      return;
-    }
-    req.userId = payload.userId;
-    const userDoc = await User.findById(payload.userId).lean();
-    if (!userDoc) {
+    const payload = jwt.verify(tokenInfo.token, JWT_SECRET);
+    const sessionUser = await findSessionUser(payload);
+    if (!sessionUser) {
       req.userId = null;
-      clearAuthCookie(res);
+      if (tokenInfo.source === 'cookie') {
+        clearAuthCookie(res);
+      }
       return;
     }
-    req.user = toPublicUser(userDoc);
+
+    req.userId = String(sessionUser.doc._id);
+    req.authModel = sessionUser.authModel;
+    req.user = toPublicUser(sessionUser.doc, sessionUser.authModel);
   } catch (err) {
     req.userId = null;
     req.user = null;
-    clearAuthCookie(res);
+    req.authModel = null;
+    if (tokenInfo.source === 'cookie') {
+      clearAuthCookie(res);
+    }
     if (process.env.NODE_ENV !== 'production') {
       console.warn('Failed to verify auth token:', err.message);
     }
@@ -110,7 +177,7 @@ async function resolveUserFromCookie(req, res) {
 
 async function attachUser(req, res, next) {
   try {
-    await resolveUserFromCookie(req, res);
+    await resolveUserFromRequest(req, res);
   } catch (err) {
     console.error('attachUser error:', err);
   }
@@ -118,7 +185,7 @@ async function attachUser(req, res, next) {
 }
 
 async function requireAuth(req, res, next) {
-  await resolveUserFromCookie(req, res);
+  await resolveUserFromRequest(req, res);
   if (!req.userId) {
     return sendAuthRequired(res);
   }
@@ -126,11 +193,11 @@ async function requireAuth(req, res, next) {
 }
 
 async function optionalAuth(req, res, next) {
-  await resolveUserFromCookie(req, res);
+  await resolveUserFromRequest(req, res);
   return next();
 }
 
-function toPublicUser(user) {
+function toPublicUser(user, authModel = 'User') {
   if (!user) return null;
   const doc = typeof user.toObject === 'function' ? user.toObject() : user;
   const id = doc._id ? String(doc._id) : doc.id ? String(doc.id) : null;
@@ -138,14 +205,16 @@ function toPublicUser(user) {
     id,
     _id: id,
     email: doc.email || null,
-    name: doc.name || null,
+    name: doc.name || doc.username || null,
     phone: doc.phone || null,
+    username: doc.username || null,
+    authModel,
   };
 }
 
 function requireAuthWithMessage(message) {
   return async (req, res, next) => {
-    await resolveUserFromCookie(req, res);
+    await resolveUserFromRequest(req, res);
     if (!req.userId) {
       return sendAuthRequired(res, message);
     }

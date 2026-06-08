@@ -69,12 +69,12 @@ function setAuthCookie(res, token) {
 }
 
 const saveUser = async (req, res) => {
-  console.log(req.body);
   const { email, first_name, last_name, telephone, password, role } = req.body;
 
   try {
+    const normalizedEmail = String(email || '').trim().toLowerCase();
     // Validate email
-    if (!validator.isEmail(email)) {
+    if (!validator.isEmail(normalizedEmail)) {
       return res.status(400).json({ success: false, message: "Invalid email format" });
     }
 
@@ -85,28 +85,37 @@ const saveUser = async (req, res) => {
     }
 
     // Check if a user with the same email already exists
-    const existingUser = await User.findOne({ email });
+    const existingUser = await User.findOne({ email: normalizedEmail });
     if (existingUser) {
       return res.status(409).json({ success: false, message: "Email already registered" });
     }
 
     // Hash the password
     const hashedPassword = await bcrypt.hash(password, 10);
+    const name = [first_name, last_name].filter(Boolean).join(" ").trim() || normalizedEmail.split("@")[0];
 
     const newUser = new User({
-      email,
-      first_name,
-      last_name,
-      password: hashedPassword, // Store the hashed password
-      telephone,
-      role,
+      name,
+      email: normalizedEmail,
+      passwordHash: hashedPassword,
+      phone: telephone,
       created_at: Date.now(),
       modified_at: Date.now(),
     });
 
     const savedUser = await newUser.save();
-    console.log("User saved successfully:", savedUser);
-    res.status(201).json({ success: true, message: "User created successfully", user: newUser });
+    const sessionToken = createSessionToken(savedUser._id);
+    setAuthCookie(res, sessionToken);
+    res.status(201).json({
+      success: true,
+      message: "User created successfully",
+      user: {
+        id: String(savedUser._id),
+        email: savedUser.email,
+        name: savedUser.name,
+        phone: savedUser.phone || null,
+      },
+    });
   } catch (error) {
     console.error("Error saving user:", error);
     res.status(500).json({ success: false, message: "Error saving user" });
@@ -117,19 +126,20 @@ const signInUser = async (req, res) => {
   const { email, password } = req.body;
 
   try {
+    const normalizedEmail = String(email || '').trim().toLowerCase();
     // Validate email
-    if (!validator.isEmail(email)) {
+    if (!validator.isEmail(normalizedEmail)) {
       return res.status(400).json({ success: false, message: "Invalid email format" });
     }
 
     // Find the user by email
-    const user = await User.findOne({ email }).select("+password"); // Ensure the password is selected
+    const user = await User.findOne({ email: normalizedEmail });
     if (!user) {
       return res.status(401).json({ success: false, message: "Invalid credentials" });
     }
 
     // Compare the provided password with the stored hashed password
-    const isMatch = await bcrypt.compare(password, user.password);
+    const isMatch = await bcrypt.compare(password, user.passwordHash);
     if (!isMatch) {
       return res.status(401).json({ success: false, message: "Invalid credentials" });
     }

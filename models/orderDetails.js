@@ -132,13 +132,44 @@ const orderDetailsSchema = new mongoose.Schema({
   carrierTrackingNumber: { type: String },
   carrierLabelFormat: { type: String },
   carrierLabelData: { type: String },
+  carrierLabelUrl: { type: String },
+  carrierLabelStoredAt: { type: Date },
   upsTrackingNumber: { type: String },
   upsShipmentIdentificationNumber: { type: String },
+  upsShipmentResponse: { type: mongoose.Schema.Types.Mixed, default: null },
   upsStatus: {
     type: String,
     enum: ['CREATED', 'FAILED'],
     default: null,
   },
+  upsPickupStatus: {
+    type: String,
+    enum: ['REQUESTED', 'SKIPPED', 'FAILED'],
+    default: null,
+  },
+  upsPickupMode: { type: String },
+  upsPickupPRN: { type: String },
+  upsPickupServiceDate: { type: String },
+  upsPickupTriggerStatus: { type: String },
+  upsPickupRateStatus: { type: String },
+  upsPickupRequestedAt: { type: Date },
+  upsPickupResponse: { type: mongoose.Schema.Types.Mixed, default: null },
+  upsPickupError: { type: mongoose.Schema.Types.Mixed, default: null },
+  upsTrackAlertStatus: {
+    type: String,
+    enum: ['SUBSCRIBED', 'SKIPPED', 'FAILED'],
+    default: null,
+  },
+  upsTrackAlertSubscribedAt: { type: Date },
+  upsTrackAlertResponse: { type: mongoose.Schema.Types.Mixed, default: null },
+  upsTrackAlertError: { type: mongoose.Schema.Types.Mixed, default: null },
+  upsTrackingStatusCode: { type: String },
+  upsTrackingStatusType: { type: String },
+  upsTrackingStatusDescription: { type: String },
+  upsTrackingLastSyncedAt: { type: Date },
+  upsLastTrackingEvent: { type: mongoose.Schema.Types.Mixed, default: null },
+  upsScheduledDeliveryDate: { type: mongoose.Schema.Types.Mixed, default: null },
+  upsActualDeliveryDate: { type: mongoose.Schema.Types.Mixed, default: null },
   upsVoidStatus: {
     type: String,
     enum: ['VOIDED', 'FAILED'],
@@ -151,6 +182,8 @@ const orderDetailsSchema = new mongoose.Schema({
 orderDetailsSchema.index({ trackingCode: 1 }, { unique: true, sparse: true });
 orderDetailsSchema.index({ user_id: 1 });
 orderDetailsSchema.index({ paymentReference: 1 }, { unique: true, sparse: true });
+orderDetailsSchema.index({ carrierTrackingNumber: 1 }, { sparse: true });
+orderDetailsSchema.index({ upsTrackingNumber: 1 }, { sparse: true });
 
 const OrderDetails = mongoose.model("OrderDetails", orderDetailsSchema);
 module.exports = OrderDetails;

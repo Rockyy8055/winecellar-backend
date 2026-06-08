@@ -19,6 +19,7 @@ const cartRoutes = require('./routes/cartRoutes');
 const upsDebugRoutes = require('./routes/upsDebugRoutes');
 const bestsellersRoutes = require('./routes/bestsellersRoutes');
 const heroSliderRoutes = require('./routes/heroSliderRoutes');
+const { startUPSTrackingSyncScheduler } = require('./services/upsTracking');
 
 const app = express();
 const PORT = process.env.PORT || 5001;
@@ -69,4 +70,5 @@ app.use(bestsellersRoutes);
 app.use(heroSliderRoutes);
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
+  startUPSTrackingSyncScheduler();
 });
